@@ -111,6 +111,9 @@ function iconWrapHtml(p, g1, g2) {
   return `<div class="icon-wrap">
     ${avatar}
     <div class="icon-actions">
+      <button class="mini-btn" data-act="loc" title="Open file location" aria-label="Open file location">
+        <svg viewBox="0 0 24 24" class="ico"><path d="M4 4h5.5l2.2 2.4H20a1 1 0 0 1 1 1V18a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm0 2v12h16V8.4h-8.7L9.1 6H4Z"/></svg>
+      </button>
       <button class="mini-btn" data-act="info" title="Info" aria-label="Info">&#9432;</button>
       <button class="mini-btn" data-act="copy" title="Copy data" aria-label="Copy data">&#10697;</button>
     </div>
@@ -262,6 +265,7 @@ function openPanel(id) {
     </dl>
     ${hint ? `<div class="launch-hint">Tip: double-click the program card to launch it.</div>` : ""}
     <div class="panel-actions">
+      <button class="btn btn-ghost" id="loc-panel-btn">Open file location</button>
       <button class="btn btn-ghost" id="copy-panel-btn">Copy data</button>
       <button class="btn btn-ghost" id="close-panel">Close</button>
     </div>`;
@@ -275,6 +279,8 @@ function openPanel(id) {
     const ok = await copyText(programSummary(p));
     toast(ok ? "Program data copied" : "Copy failed", !ok);
   };
+  const lb = $("loc-panel-btn");
+  if (lb) lb.onclick = () => openFileLocation(p);
   $("overlay").onclick = (e) => { if (e.target === $("overlay")) closePanel();
     return;
   };
@@ -289,6 +295,26 @@ function pickExe(p) {
   if (base) return base;
   if (loc) return loc;
   return "";
+}
+
+function locationTarget(p) {
+  const exe = pickExe(p);
+  if (exe) return exe;
+  return (p.install_location || "").trim();
+}
+
+async function openFileLocation(p) {
+  const target = locationTarget(p);
+  if (!target) {
+    toast("No file location available", true);
+    return;
+  }
+  try {
+    await invoke("open_file_location", { path: target });
+    toast("Opened file location");
+  } catch (e) {
+    toast(`Cannot open location: ${e}`, true);
+  }
 }
 
 function closePanel() { $("overlay").classList.add("hidden"); }
@@ -564,7 +590,9 @@ results.addEventListener("click", (e) => {
     e.stopPropagation();
     const p = state.programs.find((x) => x.id === card.dataset.id);
     if (!p) return;
-    if (btn.dataset.act === "copy") {
+    if (btn.dataset.act === "loc") {
+      openFileLocation(p).catch((err) => toast(String(err), true));
+    } else if (btn.dataset.act === "copy") {
       copyText(programSummary(p)).then((ok) =>
         toast(ok ? "Program data copied" : "Copy failed", !ok)
       );
@@ -589,6 +617,7 @@ results.addEventListener("click", (e) => {
 results.addEventListener("dblclick", async (e) => {
   const card = e.target.closest(".card");
   if (!card) return;
+  if (e.target.closest(".mini-btn") || e.target.closest(".card-check")) return;
   if (_clickTimer) {
     clearTimeout(_clickTimer);
     _clickTimer = null;

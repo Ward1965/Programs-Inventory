@@ -123,6 +123,50 @@ fn launch_program(exe_path: String) -> Result<(), String> {
     Err(format!("No runnable file found for \"{exe_path}\""))
 }
 
+/// Reveal a program's file or folder in Windows Explorer, selecting the file
+/// when it exists. Works with local paths (Open folder) and shell: namespaces
+/// (cannot be revealed — reports a friendly error).
+#[tauri::command]
+fn open_file_location(path: String) -> Result<(), String> {
+    let trimmed = path.trim().trim_end_matches(|c| c == ',' || c == ' ');
+
+    // Strip DisplayIcon ",index" suffixes (e.g. "C:\App.exe,0").
+    let mut target = trimmed.to_string();
+    if let Some(stripped) = trimmed.split(',').next() {
+        if stripped != trimmed {
+            target = stripped.to_string();
+        }
+    }
+
+    let p = std::path::Path::new(&target);
+    if p.is_file() {
+        // explorer /select,<file> opens the folder and highlights the file.
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", p.to_string_lossy()))
+            .spawn()
+            .map_err(|e| format!("Cannot open location for {target}: {e}"))?;
+        return Ok(());
+    }
+    if p.is_dir() {
+        std::process::Command::new("explorer.exe")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Cannot open location {target}: {e}"))?;
+        return Ok(());
+    }
+
+    // Maybe the location itself is a shell: URI (Store apps).
+    if trimmed.starts_with("shell:") {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        cmd.arg(trimmed);
+        cmd.spawn()
+            .map_err(|e| format!("Cannot open location {trimmed}: {e}"))?;
+        return Ok(());
+    }
+
+    Err(format!("No file or folder found at \"{target}\""))
+}
+
 #[tauri::command]
 fn get_icon(id: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
     let dir = app
@@ -704,6 +748,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             launch_program,
+            open_file_location,
             get_icon,
             export_report,
             export_report_md,
