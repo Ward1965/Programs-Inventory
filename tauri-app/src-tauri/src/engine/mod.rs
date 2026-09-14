@@ -30,6 +30,70 @@ fn is_exe_name(path: &str) -> bool {
     Path::new(path).extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
 }
 
+/// Heuristic keeper: hide hardware drivers and Windows/Microsoft system
+/// components that only clutter an "installed programs" inventory (real
+/// user-facing applications must never be hidden).
+pub(crate) fn is_system_noise(
+    name: &str,
+    publisher: &str,
+    _install_location: &str,
+    display_icon: &str,
+) -> bool {
+    let n = name.to_lowercase();
+    let p = publisher.to_lowercase();
+    let i = display_icon.to_lowercase();
+
+    // ── Hardware drivers & driver installers ────────────────────────────────
+    if n.contains("driver")
+        || n.contains("windows driver package")
+        || i.contains("dpinst")
+        || i.contains("\\difx\\")
+        || n.contains("libwdi")
+        || n.contains("libusb")
+        || n.contains("npcap")
+        || n.contains("winfsp")
+        || n.contains("bluetooth")
+        || n.contains("wireless lan")
+        || n.contains("wlan")
+        || n.contains("usb-cec adapter")
+        || n.contains("universal dock")
+        || n.contains("pen settings service")
+        || (p.contains("samsung") && n.contains("series"))
+        || (p.contains("intel") && n.contains("sensor"))
+        || n.contains("amd system monitor")
+        || (p.contains("samsung") && n.contains("printer live update"))
+    {
+        return true;
+    }
+
+    // ── Microsoft runtimes / SDKs / development infrastructure ─────────────
+    if p.contains("microsoft") || p.contains("microsoft corporation") {
+        if n.contains("redistributable")
+            || n.contains("windows desktop runtime")
+            || (n.contains(".net") && (n.contains("sdk") || n.contains("runtime") || n.contains("shared framework") || n.contains("asp.net")))
+            || n.contains("software development kit")
+            || n.contains("sdk addon")
+            || n.contains("assessment and deployment kit")
+            || n.contains("vs_coreeditorfonts")
+            || n.contains("visual studio 2010 tools for office runtime")
+            || (n.contains("visual studio") && (n.contains("installer") || n.contains("build tools")))
+            || n.contains("update health")
+            || n.contains("office file validation")
+            || (n.contains("update for") && n.contains("windows") && n.contains("kb"))
+            || n.contains("network monitor")
+        {
+            return true;
+        }
+    }
+
+    // ── Windows-of-the-OS components regardless of publisher ───────────────
+    if n.contains("intel(r) management engine") || n.contains("intel(r) chipset") {
+        return true;
+    }
+
+    false
+}
+
 /// Registry paths are wrapped in quotes and may carry an icon index suffix
 /// (`"C:\...\App.exe"` or `App.exe,0`). Collapse those to a clean filesystem
 /// path while keeping `shell:` URIs intact.
@@ -496,6 +560,17 @@ pub fn scan_all() -> Vec<Program> {
 
     list.extend(store::scan_registry());
 
+    // Drop any driver/Windows-system rows that slipped in through the other
+    // sources (e.g. a copy sitting in the start menu or Store).
+    list.retain(|p| {
+        !is_system_noise(
+            &p.name,
+            p.publisher.as_deref().unwrap_or(""),
+            p.install_location.as_deref().unwrap_or(""),
+            p.display_icon.as_deref().unwrap_or(""),
+        )
+    });
+
     // Deterministic order, matching the frontend's name expectations.
     list.sort_by(|a, b| {
         let an = a.name.to_lowercase();
@@ -508,6 +583,46 @@ pub fn scan_all() -> Vec<Program> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drivers_and_windows_system_are_hidden() {
+        let list = scan_all();
+        let names: Vec<String> = list.iter().map(|p| p.name.to_lowercase()).collect();
+        let bad: Vec<&str> = [
+            "windows driver package",
+            "media tek sp driver",
+            "realtek wireless lan driver",
+            "intel(r) management engine",
+            "intel(r) chipset",
+            "microsoft visual c++ 2010",
+            "microsoft .net sdk",
+            "windows desktop runtime",
+            "windows software development kit",
+            "assessment and deployment kit",
+            "microsoft update health tools",
+            "update for x64-based windows",
+            "npcap",
+            "winfsp",
+            "universal adb driver",
+            "samsung m332x",
+        ]
+        .into_iter()
+        .filter(|b| names.iter().any(|n| n.contains(b)))
+        .collect();
+        assert!(
+            bad.is_empty(),
+            "system/driver entries leaked into scan: {:?}",
+            bad
+        );
+        // Real applications must survive the filter.
+        for keep in ["7-zip", "firefox", "vlc", "notepad++", "telegram desktop", "imdisk toolkit"] {
+            assert!(
+                names.iter().any(|n| n.contains(keep)),
+                "expected real app {keep} to stay in the inventory"
+            );
+        }
+        eprintln!("scan_mix: total={}", list.len());
+    }
 
     #[test]
     fn start_menu_scan_mixes_sources() {

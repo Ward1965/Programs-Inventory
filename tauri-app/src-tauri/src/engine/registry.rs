@@ -48,6 +48,18 @@ fn read_program(reg: &RegKey, name: &str, arch: Option<&str>) -> Option<Program>
         return None;
     }
 
+    let publisher = read_value(reg, "Publisher");
+    let install_location = read_value(reg, "InstallLocation");
+    let display_icon = read_value(reg, "DisplayIcon");
+    if super::is_system_noise(
+        &display_name,
+        publisher.as_deref().unwrap_or(""),
+        install_location.as_deref().unwrap_or(""),
+        display_icon.as_deref().unwrap_or(""),
+    ) {
+        return None;
+    }
+
     let mut h = DefaultHasher::new();
     display_name.hash(&mut h);
     name.hash(&mut h);
@@ -56,10 +68,10 @@ fn read_program(reg: &RegKey, name: &str, arch: Option<&str>) -> Option<Program>
     Some(Program {
         id,
         name: display_name,
-        publisher: read_value(reg, "Publisher"),
+        publisher,
         version: read_value(reg, "DisplayVersion"),
-        install_location: read_value(reg, "InstallLocation"),
-        display_icon: read_value(reg, "DisplayIcon"),
+        install_location,
+        display_icon,
         install_date: read_value(reg, "InstallDate"),
         architecture: arch.map(String::from),
         source: "registry".into(),
