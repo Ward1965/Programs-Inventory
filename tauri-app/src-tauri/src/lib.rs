@@ -108,8 +108,12 @@ fn launch_program(exe_path: String) -> Result<(), String> {
 
     for c in candidates {
         if std::path::Path::new(&c).exists() {
-            std::process::Command::new(&c)
-                .spawn()
+            let mut cmd = std::process::Command::new(&c);
+            // CREATE_NO_WINDOW: launching a console program must not flash a
+            // console window while the user is inside the GUI.
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+            cmd.spawn()
                 .map(|_| ())
                 .map_err(|e| format!("Cannot launch {c}: {e}"))?;
             return Ok(());

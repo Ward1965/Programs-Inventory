@@ -289,6 +289,7 @@ body {
   border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
 }
 .grid.view-list .card.selected { background: var(--accent-soft); border-color: var(--accent); }
+.grid.view-list .card { transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.2s ease; }
 
 /* Selection action bar */
 .sel-bar {

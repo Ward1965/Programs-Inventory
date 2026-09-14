@@ -365,6 +365,11 @@ function attachFx() {
   document.addEventListener(
     "click",
     (e) => {
+      // No ripple on selection checkboxes, and none in list view — the user
+      // finds the expanding "flash" distracting there.
+      if (e.target.closest(".card-check") || (state.view === "list" && e.target.closest(".card"))) {
+        return;
+      }
       const hit = e.target.closest("button, .card, .status-chip");
       if (!hit) return;
       playClick();
@@ -631,6 +636,8 @@ async function boot() {
     } catch (_) {}
   }, 80);
 
+  const bootStart = Date.now();
+  const MIN_SPLASH_MS = 2400; // keep the welcome visible even if the scan is instant
   const timer = danceSplash();
   spawnParticles();
   const btn = $("scan-btn");
@@ -656,6 +663,8 @@ async function boot() {
     };
   } finally {
     clearInterval(timer);
+    const elapsed = Date.now() - bootStart;
+    if (elapsed < MIN_SPLASH_MS) await new Promise((r) => setTimeout(r, MIN_SPLASH_MS - elapsed));
     btn.classList.remove("scanning");
     $("scan-label").textContent = "Scan Now";
     splashDone();
