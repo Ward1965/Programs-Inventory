@@ -143,6 +143,12 @@ fn esc_html(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Escape Markdown values by wrapping them in backticks so Windows paths with
+/// `_`, `*` and backslashes render as literal text.
+fn esc_md(s: &str) -> String {
+    format!("`{}`", s.replace('`', "'"))
+}
+
 fn report_path_of(p: &engine::models::Program) -> String {
     if let Some(icon) = &p.display_icon {
         let base = icon.split(',').next().unwrap_or(icon).trim();
@@ -151,6 +157,52 @@ fn report_path_of(p: &engine::models::Program) -> String {
         }
     }
     p.install_location.clone().unwrap_or_default()
+}
+
+/// Collect the exact detail rows shown in the HTML report so the Markdown and
+/// print/PDF variants render the same fields: Path, Publisher, Version,
+/// Status, Source, Architecture, Location, Executable, Installed.
+fn program_rows(p: &engine::models::Program) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
+    let path = report_path_of(p);
+    rows.push(("Path", if path.is_empty() { "—".to_string() } else { path }));
+    if let Some(v) = &p.publisher {
+        if !v.is_empty() {
+            rows.push(("Publisher", v.clone()));
+        }
+    }
+    if let Some(v) = &p.version {
+        if !v.is_empty() {
+            rows.push(("Version", v.clone()));
+        }
+    }
+    if !p.status.is_empty() {
+        rows.push(("Status", p.status.clone()));
+    }
+    if !p.source.is_empty() {
+        rows.push(("Source", p.source.clone()));
+    }
+    if let Some(v) = &p.architecture {
+        if !v.is_empty() {
+            rows.push(("Architecture", v.clone()));
+        }
+    }
+    if let Some(v) = &p.install_location {
+        if !v.is_empty() {
+            rows.push(("Location", v.clone()));
+        }
+    }
+    if let Some(v) = &p.display_icon {
+        if !v.is_empty() && p.install_location.as_ref() != Some(v) {
+            rows.push(("Executable", v.clone()));
+        }
+    }
+    if let Some(v) = &p.install_date {
+        if !v.is_empty() {
+            rows.push(("Installed", v.clone()));
+        }
+    }
+    rows
 }
 
 /// Build a colorful, self-contained HTML report. Returns (html, icons_used).
@@ -164,7 +216,6 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
         } else {
             p.name.clone()
         };
-        let path = report_path_of(p);
         let marker = if p.has_icon {
             let file = cache.join(format!("{}.png", p.id));
             if let Ok(bytes) = std::fs::read(file) {
@@ -187,31 +238,12 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
         };
 
         let mut cells = Vec::new();
-        let mut push_row = |k: &str, v: &str| {
-            if !v.is_empty() {
-                cells.push(format!(
-                    r#"<div class="row"><span class="k">{k}</span><span class="v" dir="auto">{v}</span></div>"#
-                ));
-            }
-        };
-        let path_disp = if path.is_empty() {
-            "—".to_string()
-        } else {
-            esc_html(&path)
-        };
-        push_row("Path", &path_disp);
-        push_row("Publisher", &esc_html(p.publisher.as_deref().unwrap_or("")));
-        push_row("Version", &esc_html(p.version.as_deref().unwrap_or("")));
-        push_row("Status", &status);
-        push_row("Source", &esc_html(&p.source));
-        push_row("Architecture", &esc_html(p.architecture.as_deref().unwrap_or("")));
-        let loc = esc_html(p.install_location.as_deref().unwrap_or(""));
-        let icon = esc_html(p.display_icon.as_deref().unwrap_or(""));
-        push_row("Location", &loc);
-        if icon != loc {
-            push_row("Executable", &icon);
+        for (k, v) in program_rows(p) {
+            let v_disp = if v.is_empty() { "—".to_string() } else { esc_html(&v) };
+            cells.push(format!(
+                r#"<div class="row"><span class="k">{k}</span><span class="v" dir="auto">{v_disp}</span></div>"#
+            ));
         }
-        push_row("Installed", &esc_html(p.install_date.as_deref().unwrap_or("")));
 
         let rows_html = cells.join("\n        ");
 
@@ -357,40 +389,32 @@ async fn export_report(app: tauri::AppHandle) -> Result<String, String> {
     Ok(path_str)
 }
 
-/// Generate Markdown report text from a program list.
+/// Generate Markdown report text from a program list. Each program is a flat
+/// detail block with exactly the same fields as the HTML report.
 fn build_report_md(programs: &[engine::models::Program]) -> String {
-    let mut md = String::with_capacity(programs.len() * 160);
+    let mut md = String::with_capacity(programs.len() * 320);
     md.push_str("# Windows Program Inventory\n\n");
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
-    md.push_str(&format!("> Generated: {now} آ· {total} programs\n\n", total = programs.len()));
+    md.push_str(&format!("> Generated: {now} · {total} programs\n\n", total = programs.len()));
 
-    let groups: [(&str, &str); 4] = [
-        ("installed", "Installed"),
-        ("shortcut", "Shortcuts"),
-        ("store", "Store Apps"),
-        ("broken", "Broken"),
-    ];
+    for (i, p) in programs.iter().enumerate() {
+        let name = if p.name.trim().is_empty() {
+            "Unknown".to_string()
+        } else {
+            p.name.clone()
+        };
+        let badge = if p.status.is_empty() || p.status == "installed" {
+            String::new()
+        } else {
+            format!(" `{}`", p.status)
+        };
+        md.push_str(&format!("## {}. {}{}\n\n", i + 1, name, badge));
 
-    for (status, title) in groups {
-        let items: Vec<_> = programs.iter().filter(|p| p.status == status).collect();
-        if items.is_empty() {
-            continue;
-        }
-        md.push_str(&format!("## {title} ({})\n\n", items.len()));
-        md.push_str("| # | Name | Version | Source | Location |\n");
-        md.push_str("|---|------|---------|--------|----------|\n");
-        for (i, p) in items.iter().enumerate() {
-            let ver = p.version.as_deref().unwrap_or("â€”");
-            let src = &p.source;
-            let loc = p.install_location.as_deref().unwrap_or("â€”");
-            md.push_str(&format!(
-                "| {} | {} | {} | {} | {} |\n",
-                i + 1,
-                p.name,
-                ver,
-                src,
-                loc
-            ));
+        for (k, v) in program_rows(p) {
+            if v.is_empty() {
+                continue;
+            }
+            md.push_str(&format!("- **{k}:** {}\n", esc_md(&v)));
         }
         md.push('\n');
     }
@@ -400,45 +424,63 @@ fn build_report_md(programs: &[engine::models::Program]) -> String {
 }
 
 /// Build a print-optimized HTML document that auto-triggers the print dialog
-/// (which includes "Save as PDF" on Windows 10+).
+/// (which includes "Save as PDF" on Windows 10+). Each program uses the same
+/// detail rows as the HTML report — Path, Publisher, Version, Status, Source,
+/// Architecture, Location, Executable, Installed.
 fn build_print_html(programs: &[engine::models::Program], cache: &Path, now: &str) -> String {
-    let (rows, _with_icons) = {
-        let mut rows = String::new();
-        let mut with_icons = 0usize;
-        for p in programs {
-            let letter = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-            let icon_html = if p.has_icon {
-                let file = cache.join(format!("{}.png", p.id));
-                if let Ok(bytes) = std::fs::read(file) {
-                    use base64::Engine;
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    with_icons += 1;
-                    format!(r#"<img class="icon" src="data:image/png;base64,{b64}" alt="" />"#)
-                } else {
-                    format!(r#"<div class="icon fallback">{letter}</div>"#)
-                }
+    let mut rows = String::new();
+    let mut _with_icons = 0usize;
+    for p in programs {
+        let letter = p.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+        let icon_html = if p.has_icon {
+            let file = cache.join(format!("{}.png", p.id));
+            if let Ok(bytes) = std::fs::read(file) {
+                use base64::Engine;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                _with_icons += 1;
+                format!(r#"<div class="icon"><img src="data:image/png;base64,{b64}" alt="" /></div>"#)
             } else {
                 format!(r#"<div class="icon fallback">{letter}</div>"#)
-            };
-            rows.push_str(&format!(
-                r#"<tr>
-  <td class="tc">{icon_html}</td>
-  <td class="name">{name}</td>
-  <td>{ver}</td>
-  <td>{src}</td>
-  <td>{status}</td>
-  <td class="loc">{loc}</td>
-</tr>"#,
-                icon_html = icon_html,
-                name = esc_html(&p.name),
-                ver = esc_html(p.version.as_deref().unwrap_or("â€”")),
-                src = esc_html(&p.source),
-                status = esc_html(&p.status),
-                loc = esc_html(p.install_location.as_deref().unwrap_or("â€”")),
+            }
+        } else {
+            format!(r#"<div class="icon fallback">{letter}</div>"#)
+        };
+        let name = if p.name.trim().is_empty() {
+            "Unknown".to_string()
+        } else {
+            p.name.clone()
+        };
+        let badge = if p.status.is_empty() || p.status == "installed" {
+            String::new()
+        } else {
+            format!(r#"<span class="st st-{s}">{s}</span>"#, s = esc_html(&p.status))
+        };
+        let mut detail = String::new();
+        for (k, v) in program_rows(p) {
+            if v.is_empty() {
+                continue;
+            }
+            detail.push_str(&format!(
+                r#"<div class="row"><span class="k">{k}</span><span class="v" dir="auto">{v}</span></div>"#,
+                k = k,
+                v = esc_html(&v)
             ));
         }
-        (rows, with_icons)
-    };
+        rows.push_str(&format!(
+            r#"<div class="item">
+  {icon_html}
+  <div class="info">
+    <div class="name" dir="auto">{name}{badge}</div>
+    {detail}
+  </div>
+</div>
+"#,
+            icon_html = icon_html,
+            name = esc_html(&name),
+            badge = badge,
+            detail = detail,
+        ));
+    }
 
     let total = programs.len();
     format!(
@@ -446,7 +488,7 @@ fn build_print_html(programs: &[engine::models::Program], cache: &Path, now: &st
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Windows Program Inventory â€” Report</title>
+<title>Windows Program Inventory — Report</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 body {{ font-family: "Segoe UI", system-ui, sans-serif; color: #1a1a2e; background: #fff; }}
@@ -456,23 +498,34 @@ body {{ font-family: "Segoe UI", system-ui, sans-serif; color: #1a1a2e; backgrou
 .hdr .meta {{ margin-left: auto; font-size: 12px; opacity: .85; }}
 .hdr .count {{ font-size: 12px; background: rgba(255,255,255,.18);
   padding: 3px 12px; border-radius: 99px; }}
-table {{ width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 11.5px; }}
-th {{ text-align: left; padding: 8px 10px; border-bottom: 2px solid #e5e7eb;
-  font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: #6b7280; }}
-td {{ padding: 7px 10px; border-bottom: 1px solid #f0f0f5; vertical-align: middle; }}
-tr:nth-child(even) {{ background: #fafbff; }}
-.icon {{ width: 32px; height: 32px; border-radius: 7px; object-fit: contain;
+.wrap {{ max-width: 980px; margin: 18px auto; padding: 0 16px; }}
+.item {{
+  display: flex; align-items: flex-start; gap: 14px; break-inside: avoid;
+  border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+  background: #fff;
+}}
+.icon {{ width: 40px; height: 40px; flex: none; }}
+.icon img {{ width: 40px; height: 40px; object-fit: contain; border-radius: 8px;
   background: #f0f2fa; border: 1px solid #e5e7eb; padding: 4px; }}
-.fallback {{ display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 14px;
-  background: linear-gradient(135deg, #94a3b8, #cbd5e1); }}
-.name {{ font-weight: 600; }}
-.loc {{ font-size: 10px; color: #9ca3af; word-break: break-all; max-width: 240px; }}
-.tc {{ width: 40px; }}
+.fallback {{ display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px;
+  background: linear-gradient(135deg, #94a3b8, #cbd5e1); border-radius: 8px; }}
+.info {{ min-width: 0; flex: 1; }}
+.name {{ font-weight: 700; font-size: 14px; }}
+.st {{ font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
+  padding: 2px 8px; border-radius: 999px; margin-left: 6px; font-weight: 700;
+  background: #4f46e5; color: #fff; vertical-align: 2px; }}
+.st-store {{ background: #0ea5e9; }}
+.st-shortcut {{ background: #10b981; }}
+.st-broken {{ background: #ef4444; }}
+.row {{ display: grid; grid-template-columns: 92px 1fr; gap: 8px; margin-top: 4px; font-size: 11.5px; }}
+.row .k {{ color: #6b7280; font-weight: 600; }}
+.row .v {{ word-break: break-all; overflow-wrap: anywhere; }}
 .foot {{ text-align: center; color: #9ca3af; font-size: 11px; padding: 20px 0 40px; }}
 @media print {{
   body {{ background: #fff; }}
   .hdr {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
-  table {{ font-size: 9px; }}
+  .item {{ box-shadow: none; border-color: #cbd5e1; }}
+  .row {{ font-size: 10px; }}
 }}
 </style>
 </head>
@@ -482,12 +535,9 @@ tr:nth-child(even) {{ background: #fafbff; }}
   <span class="count">{total} programs</span>
   <span class="meta">{now}</span>
 </header>
-<table>
-<thead><tr><th></th><th>Name</th><th>Version</th><th>Source</th><th>Status</th><th>Location</th></tr></thead>
-<tbody>
+<main class="wrap">
 {rows}
-</tbody>
-</table>
+</main>
 <div class="foot">Generated by Windows Program Inventory</div>
 </body>
 </html>"#,
@@ -685,11 +735,11 @@ mod tests {
         let md = build_report_md(&list);
 
         assert!(md.starts_with("# Windows Program Inventory"));
-        assert!(md.contains("| # | Name |"), "must have table header");
-        assert!(md.contains("## Installed"), "must have Installed section");
-        assert!(md.contains("## Shortcuts"), "must have Shortcuts section");
-        assert!(md.contains("## Store Apps"), "must have Store Apps section");
-        assert!(md.contains("## Broken"), "must have Broken section");
+        assert!(md.contains("**Path:**"), "must have Path row");
+        assert!(md.contains("**Version:**"), "must have Version row");
+        assert!(md.contains("**Source:**"), "must have Source row");
+        assert!(md.contains("**Status:**"), "must have Status row");
+        assert!(md.contains("**Location:**"), "must have Location row");
     }
 
     #[test]
@@ -700,11 +750,11 @@ mod tests {
         let html = build_print_html(&list, &cache, "2099-01-01 00:00");
 
         assert!(html.starts_with("<!DOCTYPE html>"));
-        assert!(html.matches("</tr>").count() >= list.len(), "must have a row per program");
-        assert!(html.contains("</table>"));
+        assert_eq!(html.matches("<div class=\"item\">").count(), list.len());
         assert!(html.contains("Windows Program Inventory"));
+        assert!(html.contains("**Path:**") || html.contains("Path"), "must show program detail");
         let file = std::env::temp_dir().join("wpi-print-test.html");
-        std::fs::write(&file, html).expect("write");
+        std::fs::write(&file, &html).expect("write");
         assert!(file.metadata().unwrap().len() > 5_000);
         let _ = std::fs::remove_file(&file);
     }
