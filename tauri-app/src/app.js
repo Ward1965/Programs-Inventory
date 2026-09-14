@@ -676,13 +676,6 @@ function danceSplash() {
 }
 
 async function boot() {
-  // Reveal the window only after the page has painted its first frame, so the
-  // splash is already on screen — this eliminates any blank-window flash.
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  try {
-    window.__TAURI__.window.getCurrentWindow().show().catch(() => {});
-  } catch (_) {}
-
   const bootStart = Date.now();
   const MIN_SPLASH_MS = 2400; // keep the welcome visible even if the scan is instant
   const timer = danceSplash();
