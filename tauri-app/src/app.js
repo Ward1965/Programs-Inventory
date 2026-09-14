@@ -20,7 +20,6 @@ const results = $("results");
 const emptyBox = $("empty");
 const loadingBox = $("loading");
 const searchInput = $("search");
-const countLine = $("count-line");
 const resultsStyle = {};
 
 const GRADIENTS = [
@@ -140,6 +139,10 @@ function cardHtml(p, style) {
     </div>`;
   }
   return `<div class="card" data-id="${p.id}" data-path="${esc(runnable)}" tabindex="0">
+    <label class="card-check card-check-overlay" title="Select for custom report">
+      <input type="checkbox" data-check="${p.id}" ${state.selected.has(p.id) ? "checked" : ""} />
+      <span class="checkmark"></span>
+    </label>
     ${wrap}
     <div class="name">${esc(p.name)}</div>
     <div class="publisher">${esc(p.publisher || "")}</div>
@@ -157,8 +160,11 @@ function render() {
     const el = $("count-" + k);
     if (el) el.textContent = c[k];
   }
-  countLine.textContent = `${list.length} program${list.length === 1 ? "" : "s"}` + (state.query && list.length ? ` · “${state.query}”` : "");
+  $("count-text").textContent = `${list.length} program${list.length === 1 ? "" : "s"}` + (state.query && list.length ? ` · "${state.query}"` : "");
   $("page-title").textContent = NAV_TITLES[state.nav] || NAV_TITLES.all;
+
+  const hasAny = state.programs.length > 0;
+  $("sel-all-wrap")?.classList.toggle("hidden", !hasAny);
 
   emptyBox.classList.add("hidden");
   results.classList.remove("hidden");
@@ -456,12 +462,39 @@ async function exportKind(btnId, cmd, okMsg, payload) {
   }
 }
 
+/* ── Select All ──────────────────────────────────────── */
+function syncSelectAll() {
+  const cb = $("sel-all");
+  if (!cb) return;
+  const vis = filtered();
+  if (vis.length === 0) {
+    cb.checked = false;
+    cb.indeterminate = false;
+    return;
+  }
+  const allSel = vis.every((p) => state.selected.has(p.id));
+  const someSel = vis.some((p) => state.selected.has(p.id));
+  cb.checked = allSel;
+  cb.indeterminate = someSel && !allSel;
+}
+
+$("sel-all")?.addEventListener("change", () => {
+  const checked = $("sel-all").checked;
+  const vis = filtered();
+  for (const p of vis) {
+    if (checked) state.selected.add(p.id);
+    else state.selected.delete(p.id);
+  }
+  render();
+});
+
 function updateSelBar() {
   const n = state.selected.size;
   const bar = $("sel-bar");
   if (!bar) return;
   bar.classList.toggle("hidden", n === 0);
   $("sel-count").textContent = `${n} selected`;
+  syncSelectAll();
 }
 
 $("sel-clear")?.addEventListener("click", () => {

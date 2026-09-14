@@ -178,21 +178,55 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
         } else {
             r#"<div class="chip">?</div>"#.to_string()
         };
+
+        let status = esc_html(&p.status);
+        let status_badge = if status.is_empty() || status == "installed" {
+            String::new()
+        } else {
+            format!(r#"<span class="st st-{status}">{status}</span>"#)
+        };
+
+        let mut cells = Vec::new();
+        let mut push_row = |k: &str, v: &str| {
+            if !v.is_empty() {
+                cells.push(format!(
+                    r#"<div class="row"><span class="k">{k}</span><span class="v" dir="auto">{v}</span></div>"#
+                ));
+            }
+        };
+        let path_disp = if path.is_empty() {
+            "—".to_string()
+        } else {
+            esc_html(&path)
+        };
+        push_row("Path", &path_disp);
+        push_row("Publisher", &esc_html(p.publisher.as_deref().unwrap_or("")));
+        push_row("Version", &esc_html(p.version.as_deref().unwrap_or("")));
+        push_row("Status", &status);
+        push_row("Source", &esc_html(&p.source));
+        push_row("Architecture", &esc_html(p.architecture.as_deref().unwrap_or("")));
+        let loc = esc_html(p.install_location.as_deref().unwrap_or(""));
+        let icon = esc_html(p.display_icon.as_deref().unwrap_or(""));
+        push_row("Location", &loc);
+        if icon != loc {
+            push_row("Executable", &icon);
+        }
+        push_row("Installed", &esc_html(p.install_date.as_deref().unwrap_or("")));
+
+        let rows_html = cells.join("\n        ");
+
         rows.push_str(&format!(
             r#"      <div class="item">
         {marker}
         <div class="info">
-          <div class="name" dir="auto">{}</div>
-          <div class="path" dir="auto">{}</div>
+          <div class="name" dir="auto">{name}{status_badge}</div>
+          {rows_html}
         </div>
       </div>
 "#,
-            esc_html(&name),
-            if path.is_empty() {
-                "â€”".to_string()
-            } else {
-                esc_html(&path)
-            },
+            name = esc_html(&name),
+            status_badge = status_badge,
+            rows_html = rows_html,
         ));
     }
 
@@ -202,7 +236,7 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Windows Program Inventory â€” Report</title>
+<title>Windows Program Inventory — Report</title>
 <style>
   :root {{
     --bg: #f3f4fb; --card: #ffffff; --ink: #1e2433; --muted: #7a8194;
@@ -220,11 +254,9 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
   .head .meta {{ opacity: .85; font-size: 13px; margin-left: auto; }}
   .head .count {{ font-size: 13px; padding: 3px 12px; border-radius: 999px;
     background: rgba(255,255,255,.18); }}
-  .wrap {{ max-width: 880px; margin: 22px auto; padding: 0 18px; }}
-  .group {{ margin: 16px 0 8px; font-size: 12px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .6px; }}
+  .wrap {{ max-width: 920px; margin: 22px auto; padding: 0 18px; }}
   .item {{
-    display: flex; align-items: center; gap: 16px; padding: 12px 16px;
+    display: flex; align-items: flex-start; gap: 16px; padding: 14px 16px;
     background: var(--card); border: 1px solid var(--border);
     border-radius: var(--corn); margin-bottom: 10px;
     box-shadow: 0 2px 10px rgba(30,36,51,.05);
@@ -239,10 +271,20 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
     display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 20px;
     background: linear-gradient(135deg, #94a3b8, #cbd5e1);
   }}
-  .info {{ min-width: 0; }}
+  .info {{ min-width: 0; flex: 1; }}
   .name {{ font-size: 14.5px; font-weight: 600; }}
-  .path {{ font-size: 12px; color: var(--muted); margin-top: 2px;
-    word-break: break-all; }}
+  .st {{
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px;
+    padding: 2px 8px; border-radius: 999px; margin-left: 8px; font-weight: 700;
+    background: #4f46e5; color: #fff; vertical-align: 2px;
+  }}
+  .st-store {{ background: #0ea5e9; }}
+  .st-shortcut {{ background: #10b981; }}
+  .st-broken {{ background: #ef4444; }}
+  .row {{ display: grid; grid-template-columns: 96px 1fr; gap: 10px;
+    margin-top: 5px; font-size: 12px; }}
+  .row .k {{ color: var(--muted); font-weight: 600; }}
+  .row .v {{ color: var(--ink); word-break: break-all; overflow-wrap: anywhere; }}
   .foot {{ text-align: center; color: var(--muted); font-size: 12px;
     padding: 14px 0 30px; }}
   @media print {{
@@ -255,7 +297,7 @@ fn build_report_html(programs: &[engine::models::Program], cache: &Path, now: &s
 <body>
   <header class="head">
     <h1>Windows Program Inventory</h1>
-    <span class="count">{total} programs آ· {with_icons} icons</span>
+    <span class="count">{total} programs · {with_icons} icons</span>
     <span class="meta">{now}</span>
   </header>
   <main class="wrap">

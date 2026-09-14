@@ -185,7 +185,33 @@ body {
 .status-chip:hover { border-color: var(--accent); color: var(--accent); }
 .status-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-.count-line { font-size: 12px; color: var(--text-3); margin-bottom: 14px; }
+.count-line { font-size: 12px; color: var(--text-3); margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+.count-line.hidden { display: none; }
+.sel-all-check { position: relative; flex: none; width: 18px; height: 18px; display: inline-flex; cursor: pointer; }
+.sel-all-check input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; cursor: pointer; }
+.sel-all-check .checkmark {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: 2px solid var(--border); border-radius: 5px;
+  background: var(--surface-2);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.sel-all-check:hover .checkmark { border-color: var(--accent); }
+.sel-all-check input:checked + .checkmark {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+.sel-all-check input:checked + .checkmark::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.sel-all-check input:indeterminate + .checkmark {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+.sel-all-check input:indeterminate + .checkmark::after {
+  content: ""; position: absolute; left: 3px; top: 6px; width: 6px; height: 2px;
+  background: #fff; border-radius: 1px; transform: none;
+}
 
 /* Cards */
 .grid { display: grid; gap: 14px; }
@@ -193,6 +219,7 @@ body {
 .grid.view-list { grid-template-columns: 1fr; gap: 8px; }
 
 .card {
+  position: relative;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 16px 14px 13px;
   box-shadow: var(--shadow-1); cursor: pointer;
@@ -271,6 +298,25 @@ body {
 .card-check {
   position: relative; flex: none; width: 20px; height: 20px;
   display: inline-block; cursor: pointer;
+}
+.card-check-overlay {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  width: 22px; height: 22px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.grid.view-cards .card:hover .card-check-overlay,
+.grid.view-cards .card.selected .card-check-overlay { opacity: 1; }
+.card-check-overlay .checkmark { position: static; border: 2px solid var(--border); border-radius: 4px; }
+.card-check-overlay:hover .checkmark { border-color: var(--accent); }
+.card-check-overlay input:checked + .checkmark {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+}
+.card-check-overlay input:checked + .checkmark::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 5px; height: 10px;
+  border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: rotate(45deg);
 }
 .card-check input { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; cursor: pointer; }
 .card-check .checkmark {

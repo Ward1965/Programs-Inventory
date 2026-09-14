@@ -152,7 +152,13 @@
           </button>
         </div>
 
-        <div class="count-line" id="count-line">0 programs</div>
+        <div class="count-line" id="count-line">
+          <label class="sel-all-check" id="sel-all-wrap" title="Select / deselect all visible programs">
+            <input type="checkbox" id="sel-all" />
+            <span class="checkmark"></span>
+          </label>
+          <span id="count-text">0 programs</span>
+        </div>
 
         <div id="results" class="grid view-cards">
           <!-- cards injected -->
