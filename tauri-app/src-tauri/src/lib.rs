@@ -47,7 +47,7 @@ async fn scan(app: tauri::AppHandle) -> Result<ProgramList, String> {
         let with_icons = list.iter().filter(|p| p.has_icon).count();
         let c = |s: &str| list.iter().filter(|p| p.status == s).count();
         let line = format!(
-            "wpi: scan: {} programs, {} with icons ({} new); installed={} shortcut={} broken={} store={}",
+            "wpi: scan: {} programs, {} with icons ({} cached/attached); installed={} shortcut={} broken={} store={}",
             list.len(),
             with_icons,
             icons,
@@ -140,10 +140,15 @@ fn open_file_location(path: String) -> Result<(), String> {
 
     let p = std::path::Path::new(&target);
     if p.is_file() {
-        // explorer /select,<file> opens the folder and highlights the file.
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", p.to_string_lossy()))
-            .spawn()
+        // explorer /select,"<file>" opens the folder and highlights the file.
+        // The /select arg must be passed as one raw token with explicit inner
+        // quotes: quoting the *whole* token makes explorer fall back to the
+        // Documents folder whenever the path contains spaces.
+        let mut cmd = std::process::Command::new("explorer.exe");
+        use std::os::windows::process::CommandExt;
+        let sel = format!("/select,\"{}\"", p.to_string_lossy().replace('"', "\"\""));
+        cmd.raw_arg(&sel);
+        cmd.spawn()
             .map_err(|e| format!("Cannot open location for {target}: {e}"))?;
         return Ok(());
     }
@@ -199,12 +204,19 @@ fn esc_md(s: &str) -> String {
 
 fn report_path_of(p: &engine::models::Program) -> String {
     if let Some(icon) = &p.display_icon {
-        let base = icon.split(',').next().unwrap_or(icon).trim();
-        if !base.is_empty() {
-            return base.to_string();
+        let base = icon.trim().trim_matches('"').split(',').next().unwrap_or(icon).trim();
+        if !base.is_empty()
+            && !base.starts_with("shell:")
+            && !base.ends_with(".ico")
+            && !base.ends_with(".dll")
+        {
+            return engine::icons::expand_env(base);
         }
     }
-    p.install_location.clone().unwrap_or_default()
+    p.install_location
+        .clone()
+        .map(|l| engine::icons::expand_env(l.trim().trim_matches('"')))
+        .unwrap_or_default()
 }
 
 /// Collect the exact detail rows shown in the HTML report so the Markdown and
@@ -768,6 +780,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_program_gets_an_icon() {
+        let list = engine::scan_all();
+        let cache = std::env::temp_dir().join("wpi-icon-cover-test");
+        let _ = std::fs::remove_dir_all(&cache);
+        let mut list = list;
+        let start = std::time::Instant::now();
+        let n_icons = engine::icons::attach_icons(&mut list, &cache);
+        eprintln!("attach_icons: {n_icons}/{} icons, {:.1}s", list.len(), start.elapsed().as_secs_f64());
+        let missing: Vec<String> = list
+            .iter()
+            .filter(|p| !p.has_icon)
+            .map(|p| format!("{} | src={} | icon={:?}", p.name, p.source, p.display_icon))
+            .collect();
+        eprintln!("entries without icon: {}", missing.len());
+        for f in missing.iter().take(20) {
+            eprintln!("  NOICON {f}");
+        }
+        assert!(missing.is_empty(), "regression: every program must have an icon");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
 
     #[test]
     fn shell_open_opens_file() {

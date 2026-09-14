@@ -125,6 +125,7 @@ extern "system" {
 #[link(name = "ole32")]
 extern "system" {
     fn CoInitializeEx(pv_reserved: *const c_void, dw_coinit: u32) -> i32;
+    fn CoUninitialize();
 }
 
 #[link(name = "shell32")]
@@ -271,8 +272,8 @@ pub fn icon_source(p: &Program) -> Option<String> {
         let expanded = expand_env(candidate);
         let base = expanded
             .rsplit_once(',')
-            .map(|(b, _)| b.trim())
-            .unwrap_or(&expanded);
+            .map(|(b, _)| b.trim().trim_matches('"').trim())
+            .unwrap_or(expanded.trim());
         if base.starts_with("shell:") {
             return Some(expanded);
         }
@@ -284,7 +285,8 @@ pub fn icon_source(p: &Program) -> Option<String> {
     }
     // Fall back to probing the install folder for the first executable.
     if let Some(loc) = &p.install_location {
-        if let Ok(entries) = std::fs::read_dir(loc) {
+        let loc_clean = loc.trim().trim_matches('"').trim();
+        if let Ok(entries) = std::fs::read_dir(loc_clean) {
             for e in entries.flatten() {
                 let pt = e.path();
                 let name = pt.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
@@ -332,8 +334,9 @@ fn generic_png_bytes() -> Option<Vec<u8>> {
 }
 
 /// Extract the shell icon of a display string (optionally `path,index`) as
-/// (width, height, RGBA bytes). Serialized with a global lock: the shell/GDI
-/// icon cache is not safe to hit from many threads at once.
+/// (width, height, RGBA bytes). The shell icon cache is not safe to hit from
+/// many threads at once, so the Win32 calls are guarded by a global mutex;
+/// callers may still parallelize the PNG encoding that happens afterward.
 fn shell_extract(display: &str, use_file_attributes: bool) -> Option<(u32, u32, Vec<u8>)> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = match LOCK.lock() {
@@ -341,6 +344,10 @@ fn shell_extract(display: &str, use_file_attributes: bool) -> Option<(u32, u32, 
         Err(p) => p.into_inner(),
     };
 
+    extract_unsafe(display, use_file_attributes)
+}
+
+fn extract_unsafe(display: &str, use_file_attributes: bool) -> Option<(u32, u32, Vec<u8>)> {
     #[allow(clippy::redundant_closure)]
     let (path, index, cannot_parse_index) = if use_file_attributes {
         (display.split(',').next().unwrap_or(display), None, true)
@@ -365,8 +372,14 @@ fn shell_extract(display: &str, use_file_attributes: bool) -> Option<(u32, u32, 
             // Shared resources (e.g. `imageres.dll,-200`) need ExtractIconExW,
             // which honors a specific resource index/identifier.
             let mut hicon_large: *mut c_void = std::ptr::null_mut();
-            let got = ExtractIconExW(wide.as_ptr(), idx, &mut hicon_large, std::ptr::null_mut(), 1);
+            let mut got = ExtractIconExW(wide.as_ptr(), idx, &mut hicon_large, std::ptr::null_mut(), 1);
             if got == 0 || hicon_large.is_null() {
+                // The shell icon cache occasionally still warms up; retry once.
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                got = ExtractIconExW(wide.as_ptr(), idx, &mut hicon_large, std::ptr::null_mut(), 1);
+            }
+            if got == 0 || hicon_large.is_null() {
+                CoUninitialize();
                 return None;
             }
             h_icon = hicon_large;
@@ -376,29 +389,40 @@ fn shell_extract(display: &str, use_file_attributes: bool) -> Option<(u32, u32, 
                 | if use_file_attributes { SHGFI_USEFILEATTRIBUTES } else { 0 };
             let mut info: SHFILEINFOW = std::mem::zeroed();
             let size = std::mem::size_of::<SHFILEINFOW>() as u32;
-            if SHGetFileInfoW(wide.as_ptr(), 0, &mut info, size, flags) == 0 {
+            let mut ret = SHGetFileInfoW(wide.as_ptr(), 0, &mut info, size, flags);
+            if ret == 0 {
+                // First lookups can miss while the shell populates its cache.
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                ret = SHGetFileInfoW(wide.as_ptr(), 0, &mut info, size, flags);
+            }
+            if ret == 0 {
+                CoUninitialize();
                 return None;
             }
             h_icon = info.h_icon;
         }
         if h_icon.is_null() {
+            CoUninitialize();
             return None;
         }
 
         let mut ii: ICONINFO = std::mem::zeroed();
         if GetIconInfo(h_icon, &mut ii) == 0 {
             DestroyIcon(h_icon);
+            CoUninitialize();
             return None;
         }
         if ii.hbm_color.is_null() {
             DeleteObject(ii.hbm_mask);
             DeleteObject(ii.hbm_color);
             DestroyIcon(h_icon);
+            CoUninitialize();
             return None;
         }
         let out = bitmap_to_rgba(ii.hbm_color);
         DeleteObject(ii.hbm_mask);
         DestroyIcon(h_icon);
+        CoUninitialize();
         out
     }
 }
@@ -709,11 +733,59 @@ fn png_bytes_from_file(path: &str) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
+/// Fingerprint the icon source (resolved display string + file mtime) so a
+/// cached PNG is reused only while it still matches. Programs that get upgraded
+/// with a new exe therefore re-fetch a fresh icon automatically.
+fn icon_stamp(p: &Program) -> String {
+    let Some(src) = icon_source(p) else {
+        return String::new();
+    };
+    let base = src.split(',').next().unwrap_or(&src).trim();
+    let mtime = std::fs::metadata(base)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{src}|{mtime}")
+}
+
+/// Produce the PNG bytes for one program (icon asset, shell icon, file-type
+/// icon, or generic fallback). Pure function: safe to run on any thread.
+fn png_for(p: &Program, appsfolder: &HashMap<String, (u32, u32, Vec<u8>)>) -> Option<Vec<u8>> {
+    icon_source(p)
+        .and_then(|disp| {
+            let base = disp.split(',').next().unwrap_or(&disp).trim();
+            if base.starts_with("shell:") {
+                // Prefer the per-app image from our AppsFolder pass.
+                if let Some(aumid) = extract_aumid(base) {
+                    if let Some((w, h, rgba)) = appsfolder.get(&aumid) {
+                        return rgba_to_png(*w, *h, rgba);
+                    }
+                }
+                // SHGetFileInfoW resolves the AppUserModelID too.
+                return extract_rgba(&disp)
+                    .or_else(|| shell_item_icon(base))
+                    .or_else(|| filetype_rgba(&disp))
+                    .map(|(w, h, rgba)| rgba_to_png(w, h, &rgba))
+                    .flatten();
+            }
+            png_bytes_from_file(base)
+                .map(|b| (48u32, 48u32, b))
+                .or_else(|| extract_rgba(&disp))
+                .or_else(|| filetype_rgba(&disp))
+                .map(|(w, h, rgba)| rgba_to_png(w, h, &rgba))
+                .flatten()
+        })
+        .or_else(generic_png_bytes)
+}
+
 /// Extract + cache a PNG per program; sets `has_icon` when available.
 ///
 /// Every entry ends up with an icon: its own image asset, the real shell icon
 /// when its file exists, the file-type icon otherwise, and a generic
-/// application icon as a last resort.
+/// application icon as a last resort. Extraction runs on a thread pool so cold
+/// scans finish quickly; a per-icon stamp makes upgrades re-fetch automatically.
 pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
     if list.is_empty() {
         return 0;
@@ -721,50 +793,73 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
     let _ = std::fs::create_dir_all(cache);
 
     // One enumeration of AppsFolder per scan yields real per-app icons for
-    // every store entry; lookup afterward is pure hashmap.
+    // every store entry; lookup afterward is pure hashmap. Must happen before
+    // the worker threads borrow it.
     let want_shell = list
         .iter()
         .any(|p| p.display_icon.as_deref().unwrap_or("").starts_with("shell:"));
     let appsfolder = if want_shell { apps_folder_icons() } else { HashMap::new() };
 
-    let mut count = 0usize;
-    for p in list.iter_mut() {
+    // Decide which entries need fresh icons (missing or stale stamp).
+    let mut todo: Vec<usize> = Vec::new();
+    for (i, p) in list.iter_mut().enumerate() {
         let target = cache.join(format!("{}.png", p.id));
-        if target.exists() {
+        let stamp = icon_stamp(p);
+        let stamp_path = cache.join(format!("{}.stamp", p.id));
+        let up_to_date = target.exists()
+            && std::fs::read_to_string(&stamp_path).map(|s| s == stamp).unwrap_or(false);
+        if up_to_date {
             p.has_icon = true;
             continue;
         }
-        let bytes = icon_source(p)
-            .and_then(|disp| {
-                let base = disp.split(',').next().unwrap_or(&disp).trim();
-                if base.starts_with("shell:") {
-                    // Prefer the per-app image from our AppsFolder pass.
-                    if let Some(aumid) = extract_aumid(base) {
-                        if let Some((w, h, rgba)) = appsfolder.get(&aumid) {
-                            return rgba_to_png(*w, *h, rgba);
-                        }
-                    }
-                    // SHGetFileInfoW resolves the AppUserModelID too.
-                    return extract_rgba(&disp)
-                        .or_else(|| shell_item_icon(base))
-                        .or_else(|| filetype_rgba(&disp))
-                        .map(|(w, h, rgba)| rgba_to_png(w, h, &rgba))
-                        .flatten();
-                }
-                png_bytes_from_file(base)
-                    .map(|b| (48u32, 48u32, b))
-                    .or_else(|| extract_rgba(&disp))
-                    .or_else(|| filetype_rgba(&disp))
-                    .map(|(w, h, rgba)| rgba_to_png(w, h, &rgba))
-                    .flatten()
-            })
-            .or_else(generic_png_bytes);
-        if let Some(bytes) = bytes {
-            if std::fs::write(&target, bytes).is_ok() {
-                count += 1;
+        todo.push(i);
+    }
+    if todo.is_empty() {
+        return 0;
+    }
+
+    // Clone only the subset that needs work: workers need owned data so they
+    // can run concurrently without touching the mutable caller list.
+    let jobs: Vec<Program> = todo.iter().map(|&i| list[i].clone()).collect();
+
+    let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+    let chunk = jobs.len().div_ceil(n_cpus);
+
+    std::thread::scope(|s| {
+        for w in 0..n_cpus {
+            let start = w * chunk;
+            let end = (start + chunk).min(jobs.len());
+            if start >= end {
+                break;
             }
+            let slice = &jobs[start..end];
+            let worker_dir = cache;
+            let af = &appsfolder;
+            s.spawn(move || {
+                for p in slice {
+                    let Some(bytes) = png_for(p, af) else {
+                        continue;
+                    };
+                    let target = worker_dir.join(format!("{}.png", p.id));
+                    if std::fs::write(&target, bytes).is_ok() {
+                        let _ = std::fs::write(
+                            worker_dir.join(format!("{}.stamp", p.id)),
+                            icon_stamp(p),
+                        );
+                    }
+                }
+            });
         }
+    });
+
+    // Report which programs actually have an icon on disk now.
+    let mut count = 0usize;
+    for p in list.iter_mut() {
+        let target = cache.join(format!("{}.png", p.id));
         p.has_icon = target.exists();
+        if p.has_icon {
+            count += 1;
+        }
     }
     count
 }

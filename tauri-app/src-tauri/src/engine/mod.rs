@@ -6,14 +6,15 @@ pub mod store;
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 
 use icons::expand_env;
 use models::Program;
 
 fn runnable_of(p: &Program) -> Option<String> {
     let icon = p.display_icon.as_deref()?;
-    let base = icon.split(',').next().unwrap_or(icon).trim();
-    let expanded = expand_env(base);
+    let base = clean_path(icon);
+    let expanded = expand_env(&base);
     if expanded.is_empty() {
         None
     } else {
@@ -29,48 +30,439 @@ fn is_exe_name(path: &str) -> bool {
     Path::new(path).extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
 }
 
-/// First `.exe` found directly inside a folder (mirrors launch_program).
-fn exe_in_dir(dir: &Path) -> Option<String> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .find_map(|e| is_exe(&e.path()).then(|| e.path().to_string_lossy().into_owned()))
+/// Registry paths are wrapped in quotes and may carry an icon index suffix
+/// (`"C:\...\App.exe"` or `App.exe,0`). Collapse those to a clean filesystem
+/// path while keeping `shell:` URIs intact.
+fn clean_path(raw: &str) -> String {
+    let raw = raw.trim();
+    if raw.starts_with("shell:") {
+        return raw.to_string();
+    }
+    raw.split(',')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .trim_matches('"')
+        .trim()
+        .to_string()
+}
+
+/* ───────────────────────── Smart main-exe detection ─────────────────────────
+ * Many Uninstall keys leave DisplayIcon empty or pointing at a helper
+ * (uninstaller, updater, crash-sender, 7z …). Instead of trusting that blindly
+ * or picking the first .exe in the folder, we score every candidate executable
+ * by matching the program's name against the exe's own Version Information
+ * (ProductName / FileDescription / OriginalFilename) and its file name, while
+ * heavily penalizing known non-application binaries.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+#[cfg(windows)]
+mod pe_version {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "version")]
+    extern "system" {
+        fn GetFileVersionInfoSizeW(lptstr_filename: *const u16, dw_handle: *mut u32) -> u32;
+        fn GetFileVersionInfoW(
+            lptstr_filename: *const u16,
+            dw_handle: u32,
+            dw_len: u32,
+            lp_data: *mut u8,
+        ) -> i32;
+        fn VerQueryValueW(
+            p_block: *const u8,
+            lp_sub_block: *const u16,
+            lplp_buffer: *mut *mut u8,
+            pu_len: *mut u32,
+        ) -> i32;
+    }
+
+    /// (ProductName, FileDescription, OriginalFilename, CompanyName) from the
+    /// exe's Version resource. None when the file carries no version info.
+    pub fn identity(
+        path: &Path,
+    ) -> Option<(Option<String>, Option<String>, Option<String>, Option<String>)> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let mut handle: u32 = 0;
+            let size = GetFileVersionInfoSizeW(wide.as_ptr(), &mut handle);
+            if size == 0 {
+                return None;
+            }
+            let mut buf: Vec<u8> = vec![0u8; size as usize];
+            if GetFileVersionInfoW(wide.as_ptr(), handle, size, buf.as_mut_ptr()) == 0 {
+                return None;
+            }
+
+            // Locate the (language, codepage) block so we can address StringFileInfo.
+            let mut p_trans: *mut u8 = std::ptr::null_mut();
+            let mut len: u32 = 0;
+            let trans_key: Vec<u16> = "\\VarFileInfo\\Translation"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            if VerQueryValueW(buf.as_ptr(), trans_key.as_ptr(), &mut p_trans, &mut len) == 0
+                || len < 4
+                || p_trans.is_null()
+            {
+                return None;
+            }
+            let lang = u16::from_le_bytes([*p_trans, *p_trans.add(1)]);
+            let cp = u16::from_le_bytes([*p_trans.add(2), *p_trans.add(3)]);
+            let sub = format!("\\StringFileInfo\\{:04X}{:04X}\\", lang, cp);
+
+            let keys = ["ProductName", "FileDescription", "OriginalFilename", "CompanyName"];
+            let mut out = Vec::with_capacity(keys.len());
+            for key in keys {
+                let key_path = format!("{sub}{key}");
+                let wide_key: Vec<u16> = key_path.encode_utf16().chain(std::iter::once(0)).collect();
+                let mut p: *mut u8 = std::ptr::null_mut();
+                let mut l: u32 = 0;
+                if VerQueryValueW(buf.as_ptr(), wide_key.as_ptr(), &mut p, &mut l) != 0
+                    && l > 0
+                    && !p.is_null()
+                {
+                    let words = std::slice::from_raw_parts(p as *const u16, (l as usize) / 2);
+                    let text = words
+                        .split(|&c| c == 0)
+                        .next()
+                        .and_then(|u| String::from_utf16(u).ok())
+                        .filter(|s| !s.trim().is_empty());
+                    out.push(text);
+                } else {
+                    out.push(None);
+                }
+            }
+            Some((out[0].clone(), out[1].clone(), out[2].clone(), out[3].clone()))
+        }
+    }
+}
+
+/// Lowercased alphanumeric form used for fuzzy matching ("Visual C++ x64" → "visualcx64").
+fn norm_name(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+fn norm_tokens(s: &str) -> Vec<String> {
+    let mut v = s
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| t.len() >= 2)
+        .map(String::from)
+        .collect::<Vec<_>>();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// Binaries that are almost never the program the user wants to launch.
+fn is_support_binary(path: &Path) -> bool {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let p = path.to_string_lossy().to_ascii_lowercase();
+    let in_bad_dir = p.contains("package cache") || p.contains("windows\\installer");
+    if in_bad_dir {
+        return true;
+    }
+    let exact_bad = [
+        "uninstall", "uninstaller", "uninst", "update", "updater", "setup", "setupx",
+        "installer", "install", "helper", "dpinst", "aria2c", "ffmpeg", "ncat", "adb",
+        "7z", "debugfs", "maintenancetool", "activator", "keyhh", "crashsender",
+        "crashreport", "service", "daemon",
+    ];
+    let prefix_bad = [
+        "unins", "uninstall", "update", "updater", "setup", "install", "helper", "crash",
+        "service", "daemon",
+    ];
+    if exact_bad.contains(&stem.as_str()) || prefix_bad.iter().any(|w| stem.starts_with(w)) {
+        return true;
+    }
+    // "*svc*", "*-svc.exe" style service processes.
+    stem.contains("svc")
+}
+
+/// Score one candidate executable against the installed program's name.
+fn score_exe(path: &Path, name_norm: &str, name_tokens: &[String], folder_stem: &str) -> i32 {
+    let mut score = 0i32;
+
+    if is_support_binary(path) {
+        score -= 600;
+    }
+
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem_norm = norm_name(&stem);
+    let folder_norm = norm_name(folder_stem);
+
+    // File name that mirrors the install folder name (App.exe inside App\) is
+    // a strong signal the binary is the main application.
+    if !folder_norm.is_empty() && stem_norm.contains(&folder_norm) {
+        score += 30;
+    }
+
+    // Match the program's own name against the exe's embedded version info,
+    // the most reliable "this is that program" signal. When several binaries
+    // of a suite share the product name (Hex Workshop ships BConv64/Calc64/
+    // HWorks64 …), the one whose description matches the *shortest* is the main
+    // application, so reward closeness to the exact display name.
+    if let Some((prod, desc, orig, company)) = pe_version::identity(path) {
+        let combos: [(Option<String>, i32, i32); 4] = [
+            (prod, 120, 50),
+            (desc, 80, 30),
+            (orig, 40, 15),
+            (company, 25, 10),
+        ];
+        for (text, strong, weak) in combos {
+            let Some(t) = text else { continue };
+            let m = norm_name(&t);
+            if m.is_empty() {
+                continue;
+            }
+            if m == name_norm {
+                score += strong + 40;
+            } else if name_norm.contains(&m) && !m.is_empty() {
+                // Shortest exact substring of the program name = the main exe.
+                score += strong;
+                score += (40 - (m.len() as i32).min(40)) * 1; // shorter wins
+            } else if m.contains(name_norm) {
+                score += strong + 20;
+                // Penalize obvious sub-tools that merely mention the suite name.
+                let coarse = ["calculator", "converter", "unlocker", "disk access", "helper", "console", "daemon", "service", "agent", "crash"];
+                if coarse.iter().any(|w| m.contains(w)) {
+                    score -= 90;
+                }
+            } else if name_tokens.iter().any(|tok| m.contains(tok)) {
+                score += weak;
+            }
+        }
+    }
+
+    // Last signal: the file stem itself resembles the program name. Among
+    // equally-named files the shortest / exact sigma wins again.
+    if stem_norm == name_norm || name_norm.contains(&stem_norm) {
+        score += 70;
+        if !stem_norm.is_empty() {
+            score += (40 - (stem_norm.len() as i32).min(40)) * 1;
+        }
+    } else if name_tokens.iter().any(|tok| stem_norm.contains(tok)) && name_norm.len() >= 3 {
+        score += 30;
+    }
+
+    score
+}
+
+/// The main executable may live next to the DisplayIcon even when no install
+/// folder is recorded (e.g. AIMP points DisplayIcon at Uninstall.exe). Collect
+/// every direct candidate around the icon and inside the install folder.
+/// System-wide folders (C:\Windows, Common Files, …) are never enumerated:
+/// probing them for a single app would read version info of thousands of exes.
+fn candidates_for(p: &Program) -> Vec<String> {
+    let icon_exe_support = p.display_icon.as_deref().map(clean_path).filter(|c| !c.starts_with("shell:")).map(|c| expand_env(&c)).filter(|e| is_support_binary(Path::new(e))).is_some();
+
+    let mut dirs = Vec::new();
+
+    // The install folder is the natural home of the real binary.
+    if let Some(loc) = p.install_location.as_deref() {
+        let expanded = expand_env(&clean_path(loc));
+        let dir = PathBuf::from(&expanded);
+        if dir.is_dir() && dir_is_probeable(&dir) {
+            dirs.push(dir);
+        }
+    }
+
+    // The DisplayIcon's own folder can also hold the application, but only
+    // bother when the recorded icon is a helper (uninstaller/setup/…) or there
+    // is no install folder at all.
+    if p.install_location.is_none() || icon_exe_support {
+        if let Some(icon) = p.display_icon.as_deref() {
+            let cleaned = clean_path(icon);
+            if !cleaned.starts_with("shell:") {
+                let expanded = expand_env(&cleaned);
+                if let Some(parent) = Path::new(&expanded).parent() {
+                    if parent.is_dir() && dir_is_probeable(parent) {
+                        dirs.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut names: HashSet<String> = HashSet::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if is_exe(&path) {
+                if names.insert(path.to_string_lossy().to_lowercase()) {
+                    out.push(path.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Folders that contain system-wide binaries must not be scanned candidate by
+/// candidate; also skip any directory too large to probe cheaply.
+fn dir_is_probeable(dir: &Path) -> bool {
+    let s = dir.to_string_lossy().to_ascii_lowercase();
+    let system_dirs = [
+        r"c:\windows",
+        r"c:\program files\common files",
+        r"c:\program files (x86)\common files",
+        r"c:\program files\windowsapps",
+        r"c:\programdata",
+        r"c:\program files\difx",
+    ];
+    if system_dirs.iter().any(|d| s.starts_with(d)) {
+        return false;
+    }
+    // Some entries point their icon into a globally-shared folder (e.g. Adobe
+    // natively installs into "C:\Program Files\Adobe"): cap the probe cost.
+    let exe_count = std::fs::read_dir(dir)
+        .map(|it| {
+            it.flatten()
+                .filter(|e| e.path().extension().map(|x| x.eq_ignore_ascii_case("exe")).unwrap_or(false))
+                .take(60)
+                .count()
+        })
+        .unwrap_or(0);
+    exe_count < 60 && exe_count > 0
+}
+
+/// Smart resolution of the main executable for a registry/shortcut program.
+/// Candidates are the recorded DisplayIcon plus every exe in the icon folder
+/// and the install folder. Each is scored against the program's name (via the
+/// exe's embedded version info); the registry-provided exe is kept unless a
+/// better candidate beats it by a clear margin.
+fn smart_main_exe(p: &Program) -> Option<String> {
+    let name_norm = norm_name(&p.name);
+    let name_tokens = norm_tokens(&p.name);
+
+    let icon_exe: Option<String> = p.display_icon.as_deref()
+        .map(clean_path)
+        .filter(|c| !c.starts_with("shell:"))
+        .map(|c| expand_env(&c))
+        .filter(|e| is_exe(Path::new(e)));
+
+    let candidates = candidates_for(p);
+
+    if candidates.is_empty() {
+        return icon_exe;
+    }
+
+    let mut scored: Vec<(i32, String)> = Vec::new();
+    for c in &candidates {
+        let path = Path::new(c);
+        let folder_stem = path.parent().and_then(|d| d.file_name()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let s = score_exe(path, &name_norm, &name_tokens, &folder_stem);
+        scored.push((s, c.clone()));
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    let (best_score, best) = scored[0].clone();
+
+    // Prefer the registry-provided exe when it is a reasonable candidate; only
+    // switch when the folder clearly holds the real application.
+    if let Some(icon) = &icon_exe {
+        let icon_score = score_exe(Path::new(icon), &name_norm, &name_tokens, "");
+        if best == *icon || best_score - icon_score < 40 {
+            return Some(icon.clone());
+        }
+        // A file-name-only win is not trustworthy (e.g. ImDisk-Dlg.exe vs the
+        // registry's config.exe when no binary carries version info). Only
+        // replace the registry exe when the winner embeds version info that
+        // matches the program name.
+        if !is_support_binary(Path::new(icon)) && !has_name_identity(&best, &name_norm, &name_tokens) {
+            return Some(icon.clone());
+        }
+    }
+    Some(best)
+}
+
+/// True when the executable embeds a product/description naming the program.
+fn has_name_identity(path: &str, name_norm: &str, name_tokens: &[String]) -> bool {
+    let Some((prod, desc, orig, _)) = pe_version::identity(Path::new(path)) else {
+        return false;
+    };
+    [prod, desc, orig].into_iter().flatten().any(|t| {
+        let m = norm_name(&t);
+        !m.is_empty()
+            && (m == name_norm
+                || name_norm.contains(&m)
+                || m.contains(name_norm)
+                || name_tokens.iter().any(|tok| m.contains(tok)))
+    })
 }
 
 /// Keep only entries backed by a runnable executable. Help files, icon/decor
 /// files and folder-only records are noise, so they are dropped. When an entry
-/// only exposes its install folder, the first `.exe` inside becomes its target.
+/// only exposes its install folder, the best-matching `.exe` inside becomes its
+/// target (grand uninstaller/updater files are never chosen).
+/// Keep only entries backed by a runnable executable. Help files, icon/decor
+/// files and folder-only records are noise, so they are dropped. Registry
+/// entries get smart main-exe resolution (the recorded icon may be a helper);
+/// start-menu shortcuts are authoritative and keep their resolved target.
 fn solidify(p: &mut Program) -> bool {
     if p.source == "store" {
         return true; // Store apps are launched through the shell, not an exe.
     }
 
-    if let Some(icon) = p.display_icon.as_deref() {
-        let raw = icon.split(',').next().unwrap_or(icon).trim();
-        if raw.starts_with("shell:") {
-            return true; // shell namespace (Store-style) app link
+    if let Some(loc) = p.install_location.as_deref() {
+        let cleaned = expand_env(&clean_path(loc));
+        if !cleaned.is_empty() {
+            p.install_location = Some(cleaned);
         }
-        let expanded = expand_env(raw);
-        if is_exe(Path::new(&expanded)) {
-            return true;
-        }
-        if is_exe_name(&expanded) {
-            // Broken shortcut that still points at a .exe must be kept so the
-            // status "broken" stays visible; anything else (chm/ico/dll/…) dies.
-            return p.source == "start-menu";
-        }
-        // Icon points at a non-executable or is missing; probe the folder below.
     }
 
-    if let Some(loc) = p.install_location.as_deref() {
-        let expanded = expand_env(loc.trim());
-        let lp = Path::new(&expanded);
-        if is_exe(lp) {
+    let icon_target: Option<String> = p.display_icon.as_deref().map(clean_path).and_then(|c| {
+        if c.starts_with("shell:") {
+            Some(c)
+        } else {
+            let expanded = expand_env(&c);
+            Some(expanded).filter(|e| is_exe_name(e))
+        }
+    });
+
+    match icon_target {
+        // A resolved shell namespace link stays as-is.
+        Some(ref t) if t.starts_with("shell:") => {
+            p.display_icon = Some(t.clone());
             return true;
         }
-        if lp.is_dir() {
-            if let Some(exe) = exe_in_dir(lp) {
-                p.display_icon = Some(exe);
+        Some(ref t) => {
+            if p.source == "start-menu" {
+                // The shortcut is authoritative: an existing exe target stays
+                // exactly as resolved; a missing one is kept as "broken".
+                if is_exe(Path::new(t)) {
+                    p.display_icon = Some(t.clone());
+                    return true;
+                }
+                return true;
+            }
+            // Registry: run the smart scorer even when the recorded exe exists,
+            // so an icon that points at Uninstall.exe/7z.exe gets corrected.
+            let target = smart_main_exe(p).or_else(|| Some(t.clone()));
+            if let Some(t) = target {
+                p.display_icon = Some(t);
+                return true;
+            }
+        }
+        None => {
+            if p.source == "start-menu" {
+                return false; // nothing executable carried by the shortcut.
+            }
+            if let Some(t) = smart_main_exe(p) {
+                p.display_icon = Some(t);
                 return true;
             }
         }
