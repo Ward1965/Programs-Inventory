@@ -109,12 +109,19 @@ fn get_start_apps() -> Vec<(String, String)> {
     const SCRIPT: &str = r#"[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-StartApps | ForEach-Object { $_.Name + "`t" + $_.AppID }"#;
 
     let mut args = std::process::Command::new("powershell.exe");
-    args.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &powershell_encoded(SCRIPT)]);
+    args.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-EncodedCommand",
+        &powershell_encoded(SCRIPT),
+    ]);
     args.stdin(std::process::Stdio::null());
     args.stdout(std::process::Stdio::piped());
     args.stderr(std::process::Stdio::null());
-    // CREATE_NO_WINDOW: this app is GUI (no console), so suppress the
-    // PowerShell child's console window.
+    // CREATE_NO_WINDOW + WindowStyle Hidden: this app is GUI (no console), so
+    // the PowerShell child must never flash a console window.
     use std::os::windows::process::CommandExt;
     args.creation_flags(0x0800_0000);
 

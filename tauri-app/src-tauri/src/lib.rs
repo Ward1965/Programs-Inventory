@@ -594,16 +594,52 @@ async fn export_custom_report(
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     let (html, _icons) = build_report_html(&programs, &cache, &now);
 
+    write_and_open(&app, "WPI Custom Report.html", &html)
+}
+
+/// Generate a Markdown report for the selected programs only.
+#[tauri::command]
+async fn export_custom_report_md(
+    app: tauri::AppHandle,
+    programs: Vec<engine::models::Program>,
+) -> Result<String, String> {
+    let md = build_report_md(&programs);
+    write_and_open(&app, "WPI Custom Report.md", &md)
+}
+
+/// Generate a print/PDF report for the selected programs only — opens the print
+/// dialog (with "Save as PDF") in the default browser.
+#[tauri::command]
+async fn export_custom_report_pdf(
+    app: tauri::AppHandle,
+    programs: Vec<engine::models::Program>,
+) -> Result<String, String> {
+    let cache = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("icons-v3");
+
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let mut html = build_print_html(&programs, &cache, &now);
+    html.push_str("<script>window.onload=function(){setTimeout(function(){window.print()},600)}</sc");
+    html.push_str("ript>\n");
+    write_and_open(&app, "WPI Custom Report Print.html", &html)
+}
+
+/// Write `content` next to Documents (falling back to home / app-data / temp)
+/// and open it in the default viewer. Returns the final path.
+fn write_and_open(app: &tauri::AppHandle, name: &str, content: &str) -> Result<String, String> {
     let dir = app
         .path()
         .document_dir()
         .or_else(|_| app.path().home_dir())
         .or_else(|_| app.path().app_data_dir())
         .map_err(|e| e.to_string())?;
-    let file = dir.join("WPI Custom Report.html");
-    if let Err(e) = std::fs::write(&file, &html) {
-        let fallback = std::env::temp_dir().join("WPI Custom Report.html");
-        std::fs::write(&fallback, &html).map_err(|f| format!("custom report error: {e} / {f}"))?;
+    let file = dir.join(name);
+    if let Err(e) = std::fs::write(&file, content) {
+        let fallback = std::env::temp_dir().join(name);
+        std::fs::write(&fallback, content).map_err(|f| format!("{name}: {e} / {f}"))?;
         let path_str = fallback.to_string_lossy().into_owned();
         shell_open(&path_str)?;
         return Ok(path_str);
@@ -622,7 +658,9 @@ pub fn run() {
             export_report,
             export_report_md,
             export_report_pdf,
-            export_custom_report
+            export_custom_report,
+            export_custom_report_md,
+            export_custom_report_pdf
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

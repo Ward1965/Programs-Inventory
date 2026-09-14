@@ -503,14 +503,28 @@ $("sel-clear")?.addEventListener("click", () => {
   updateSelBar();
 });
 
-$("sel-report")?.addEventListener("click", () => {
-  const sel = state.programs.filter((p) => state.selected.has(p.id));
+function selectedPrograms() {
+  return state.programs.filter((p) => state.selected.has(p.id));
+}
+
+function exportCustom(kind) {
+  const sel = selectedPrograms();
   if (!sel.length) {
     toast("Select at least one program", true);
     return;
   }
-  exportKind("sel-report", "export_custom_report", "Custom report saved", { programs: sel });
-});
+  const map = {
+    html: ["sel-report", "export_custom_report", "Custom HTML report saved"],
+    md: ["sel-report-md", "export_custom_report_md", "Custom Markdown saved"],
+    pdf: ["sel-report-pdf", "export_custom_report_pdf", "Custom PDF opened"],
+  };
+  const [btnId, cmd, okMsg] = map[kind];
+  exportKind(btnId, cmd, okMsg, { programs: sel });
+}
+
+$("sel-report")?.addEventListener("click", () => exportCustom("html"));
+$("sel-report-md")?.addEventListener("click", () => exportCustom("md"));
+$("sel-report-pdf")?.addEventListener("click", () => exportCustom("pdf"));
 
 $("report-md-btn").addEventListener("click", () => exportKind("report-md-btn", "export_report_md", "Markdown saved"));
 $("report-pdf-btn").addEventListener("click", () => exportKind("report-pdf-btn", "export_report_pdf", "Print/PDF opened"));
@@ -662,12 +676,12 @@ function danceSplash() {
 }
 
 async function boot() {
-  // Reveal the window only after the page has painted — avoids the initial white flash.
-  setTimeout(() => {
-    try {
-      window.__TAURI__.window.getCurrentWindow().show().catch(() => {});
-    } catch (_) {}
-  }, 80);
+  // Reveal the window only after the page has painted its first frame, so the
+  // splash is already on screen — this eliminates any blank-window flash.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    window.__TAURI__.window.getCurrentWindow().show().catch(() => {});
+  } catch (_) {}
 
   const bootStart = Date.now();
   const MIN_SPLASH_MS = 2400; // keep the welcome visible even if the scan is instant
