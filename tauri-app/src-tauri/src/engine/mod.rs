@@ -21,9 +21,69 @@ fn runnable_of(p: &Program) -> Option<String> {
     }
 }
 
+fn is_exe(path: &Path) -> bool {
+    path.is_file() && path.extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
+}
+
+fn is_exe_name(path: &str) -> bool {
+    Path::new(path).extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
+}
+
+/// First `.exe` found directly inside a folder (mirrors launch_program).
+fn exe_in_dir(dir: &Path) -> Option<String> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find_map(|e| is_exe(&e.path()).then(|| e.path().to_string_lossy().into_owned()))
+}
+
+/// Keep only entries backed by a runnable executable. Help files, icon/decor
+/// files and folder-only records are noise, so they are dropped. When an entry
+/// only exposes its install folder, the first `.exe` inside becomes its target.
+fn solidify(p: &mut Program) -> bool {
+    if p.source == "store" {
+        return true; // Store apps are launched through the shell, not an exe.
+    }
+
+    if let Some(icon) = p.display_icon.as_deref() {
+        let raw = icon.split(',').next().unwrap_or(icon).trim();
+        if raw.starts_with("shell:") {
+            return true; // shell namespace (Store-style) app link
+        }
+        let expanded = expand_env(raw);
+        if is_exe(Path::new(&expanded)) {
+            return true;
+        }
+        if is_exe_name(&expanded) {
+            // Broken shortcut that still points at a .exe must be kept so the
+            // status "broken" stays visible; anything else (chm/ico/dll/…) dies.
+            return p.source == "start-menu";
+        }
+        // Icon points at a non-executable or is missing; probe the folder below.
+    }
+
+    if let Some(loc) = p.install_location.as_deref() {
+        let expanded = expand_env(loc.trim());
+        let lp = Path::new(&expanded);
+        if is_exe(lp) {
+            return true;
+        }
+        if lp.is_dir() {
+            if let Some(exe) = exe_in_dir(lp) {
+                p.display_icon = Some(exe);
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Collect every installed program from all scan sources and attach icons.
 pub fn scan_all() -> Vec<Program> {
-    let mut list = registry::scan_registry();
+    let mut list: Vec<Program> = registry::scan_registry()
+        .into_iter()
+        .filter_map(|mut p| solidify(&mut p).then_some(p))
+        .collect();
 
     let installed: HashSet<String> = list
         .iter()
@@ -33,6 +93,15 @@ pub fn scan_all() -> Vec<Program> {
         .collect();
 
     list.extend(shortcuts::scan_all(&installed));
+
+    // Shortcuts landed above with their resolved target in display_icon. Only
+    // keep those that point at an executable (or a broken .exe hook); drop
+    // nothing-but-links like .chm/.ico/.url/.lnk-only or plain folders.
+    list = list
+        .into_iter()
+        .filter_map(|mut p| solidify(&mut p).then_some(p))
+        .collect();
+
     list.extend(store::scan_registry());
 
     // Deterministic order, matching the frontend's name expectations.
@@ -91,5 +160,27 @@ mod tests {
             .filter(|t| super::icons::debug_extract(t).is_some())
             .count();
         assert!(ok > 0, "expected at least one shortcut target icon to extract");
+    }
+
+    #[test]
+    fn every_listed_program_is_an_executable() {
+        let list = scan_all();
+        for p in list.iter() {
+            let icon = p.display_icon.as_deref().unwrap_or("");
+            if p.source == "store" {
+                assert!(
+                    icon.is_empty() || icon.starts_with("shell:"),
+                    "store entries must launch through the shell: {icon}"
+                );
+                continue;
+            }
+            let base = icon.split(',').next().unwrap_or(icon).trim();
+            let expanded = expand_env(base);
+            assert!(
+                expanded.to_lowercase().ends_with(".exe"),
+                "{} lists a non-executable target: {icon}",
+                p.name
+            );
+        }
     }
 }
