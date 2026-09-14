@@ -262,8 +262,9 @@ body {
 .mini-btn:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .card .name {
   font-size: 13.5px; font-weight: 600; line-height: 1.3; text-align: center;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-  min-height: 2.6em;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere; word-break: break-word;
+  max-width: 100%;
 }
 .card .publisher {
   font-size: 11.5px; color: var(--text-3); text-align: center;
@@ -289,7 +290,7 @@ body {
 }
 .grid.view-list .card .avatar { width: 32px; height: 32px; border-radius: 8px; font-size: 15px; }
 .grid.view-list .card .name { font-size: 13px; min-height: 0; text-align: left;
-  flex: 1; -webkit-line-clamp: 3; }
+  flex: 1; -webkit-line-clamp: 3; overflow-wrap: anywhere; word-break: break-word; }
 .grid.view-list .card .publisher { font-size: 12px; max-width: 30%; text-align: left; color: var(--text-2); flex: 1; }
 .grid.view-list .card .foot { width: auto; margin-top: 0; }
 .grid.view-list .card .version { max-width: 160px; }
