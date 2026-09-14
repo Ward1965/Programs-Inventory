@@ -1,0 +1,14 @@
+bin/
+obj/
+*.user
+.vs/
+.idea/
+
+# Rust / Tauri
+target/
+node_modules/
+dist/
+
+# Generated
+*.log
+*.tmp

@@ -1,0 +1,68 @@
+<UserControl x:Class="WindowsProgramInventory.UI.Views.StatisticsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:core="clr-namespace:WindowsProgramInventory.Core">
+
+    <Grid Margin="18,14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="{Binding Title}" Style="{StaticResource PageTitleStyle}" />
+
+        <Grid Grid.Row="1" Margin="0,16,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,8,8" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding Total, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatTotal}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource CardStyle}" Margin="4,0,4,8" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding Installed, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatInstalled}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource CardStyle}" Margin="8,0,0,8" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding ShortcutsOnly, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatShortcutsOnly}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource CardStyle}" Margin="0,0,8,0" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding Broken, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatBroken}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource CardStyle}" Margin="4,0,4,0" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding StoreApps, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatStoreApps}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource CardStyle}" Margin="8,0,0,0" Padding="18,16">
+                <StackPanel>
+                    <TextBlock Text="{Binding Publishers, StringFormat={}{0:N0}}" FontSize="30" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Static core:Strings.StatPublishers}" Style="{StaticResource SectionLabelStyle}" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

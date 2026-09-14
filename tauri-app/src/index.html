@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Windows Program Inventory</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ── Splash / welcome ───────────────────────────────── -->
+  <div id="splash" class="splash">
+    <div class="splash-mesh"></div>
+    <div class="splash-grid"></div>
+    <div class="splash-particles" id="splash-particles"></div>
+    <div class="splash-inner">
+      <div class="splash-badge-wrap">
+        <div class="splash-ring"></div>
+        <div class="splash-halo"></div>
+        <div class="splash-badge">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg>
+        </div>
+        <i class="orbit-dot dot-1"></i>
+        <i class="orbit-dot dot-2"></i>
+        <i class="orbit-dot dot-3"></i>
+      </div>
+      <div class="splash-card">
+        <span class="splash-kicker">Windows Program Inventory</span>
+        <h1 class="splash-title">Welcome</h1>
+        <p class="splash-sub" id="splash-sub">Preparing your program inventory…</p>
+        <div class="splash-track">
+          <div class="splash-bar" id="splash-bar"></div>
+        </div>
+        <div class="splash-stage">
+          <span id="splash-stage">Warming up</span>
+          <span class="splash-pct" id="splash-pct">0%</span>
+        </div>
+      </div>
+    </div>
+    <button class="splash-skip" id="splash-skip" hidden>Open anyway</button>
+  </div>
+
+  <div class="app">
+    <!-- ── Sidebar ─────────────────────────────────────── -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">WPI</div>
+        <div class="brand-text">
+          <div class="brand-title">Program Inventory</div>
+          <div class="brand-sub">Windows Explorer</div>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-nav="all">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M4 13h6V4H4v9Zm0 7h6v-5H4v5Zm10 0h6v-9h-6v9Zm0-16v5h6V4h-6Z"/></svg>
+          <span>All Programs</span>
+          <span class="count" id="count-all">0</span>
+        </button>
+        <button class="nav-item" data-nav="installed">
+          <svg viewBox="0 0 24 24" class="ico"><path d="m12 2 9 5-9 5-9-5 9-5Zm0 12.5L21 9.5 12 14.5 3 9.5l9 5ZM3 14.5l9 5 9-5v2l-9 5-9-5v-2Z"/></svg>
+          <span>Installed</span>
+          <span class="count" id="count-installed">0</span>
+        </button>
+        <button class="nav-item" data-nav="shortcuts">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M4 3h16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm0 3v14h16V6H4Zm4 8h8v-2H8v2Zm0-4h8V8H8v2Z"/></svg>
+          <span>Shortcuts</span>
+          <span class="count" id="count-shortcuts">0</span>
+        </button>
+        <button class="nav-item" data-nav="broken">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M12 2 1 21h22L12 2Zm0 14h-.01M11 8h2v6h-2V8Z"/></svg>
+          <span>Broken</span>
+          <span class="count" id="count-broken">0</span>
+        </button>
+        <button class="nav-item" data-nav="store">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M5 3h14v18H5V3Zm2 2v14h10V5H7Zm2 2h6v2H9V7Zm0 4h6v2H9v-2Zm0 4h6v2H9v-2Z"/></svg>
+          <span>Store Apps</span>
+          <span class="count" id="count-store">0</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button class="nav-item" id="scan-btn">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M17.65 6.35A8 8 0 1 0 19.9 14h-2.1A6 6 0 1 1 12 6c1.6 0 3 .62 4.1 1.6L13 11h8V3l-3.35 3.35Z"/></svg>
+          <span id="scan-label">Scan Now</span>
+        </button>
+        <button class="nav-item" id="report-btn">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm0 2v16h12V8h-4V4H6Z"/></svg>
+          <span class="bx-label">Report (HTML)</span>
+          <span class="mini-spinner"></span>
+        </button>
+        <button class="nav-item" id="report-md-btn">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M4 5h16v14H4V5Zm2 2v10h12V7H6Zm2 2h2V9H8v6h2v-2h2v2h2V9h-2v2h-2V9H6v2H4"/></svg>
+          <span class="bx-label">Export Markdown</span>
+          <span class="mini-spinner"></span>
+        </button>
+        <button class="nav-item" id="report-pdf-btn">
+          <svg viewBox="0 0 24 24" class="ico"><path d="M5 3h14v18H5V3Zm2 2v14h10V5H7Zm2 6V9h6v2H9Zm0 3h6v2H9v-2Zm0 3h4v2H9v-2Z"/></svg>
+          <span class="bx-label">Export PDF</span>
+          <span class="mini-spinner"></span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── Main ────────────────────────────────────────── -->
+    <main class="main">
+      <header class="topbar">
+        <div class="title-block">
+          <h1 id="page-title">All Programs</h1>
+          <p class="subtitle" id="subtitle">Discover what's installed on this device</p>
+        </div>
+
+        <div class="search-box" id="search-box">
+          <svg viewBox="0 0 24 24" class="ico search-ico"><path d="m21 20-4.35-4.35A7.5 7.5 0 1 0 15.65 16.6L20 21l1-1ZM10.5 17a6.5 6.5 0 1 1 0-13 6.5 6.5 0 0 1 0 13Z"/></svg>
+          <input id="search" placeholder="Search programs…" autocomplete="off" />
+          <kbd>Ctrl K</kbd>
+        </div>
+
+        <div class="top-actions">
+          <div class="seg" id="view-seg">
+            <button class="seg-btn active" data-view="cards" title="Cards">
+              <svg viewBox="0 0 24 24" class="ico"><path d="M4 4h6v6H4V4Zm10 0h6v6h-6V4ZM4 14h6v6H4v-6Zm10 0h6v6h-6v-6Z"/></svg>
+            </button>
+            <button class="seg-btn" data-view="list" title="List">
+              <svg viewBox="0 0 24 24" class="ico"><path d="M4 6h16v2H4V6Zm0 5h16v2H4v-2Zm0 5h16v2H4v-2Z"/></svg>
+            </button>
+          </div>
+          <div class="size-control" id="size-control" title="Icon size">
+            <svg viewBox="0 0 24 24" class="ico"><path d="M12 3v6h6l-2 2a6 6 0 0 1-1.2 1.5c.8.7 1.9 1.2 3.2 1.5v2c-1.9-.3-3.4-1.1-4.6-2.1-.1.4-.2.9-.4 1.3l4.1 4.1-1.4 1.4-4-4a18 18 0 0 1-.8 4h-2a18 18 0 0 1-.8-4l-4 4-1.4-1.4 4.1-4.1c-.2-.4-.3-.9-.4-1.3-1.2 1-2.7 1.8-4.6 2.1V12c1.3-.3 2.4-.8 3.2-1.5A6 6 0 0 1 8 11H6V6h6V3Z"/></svg>
+            <input type="range" id="icon-size" min="24" max="96" step="8" value="80" />
+            <span id="size-label">80</span>
+          </div>
+          <button class="icon-btn" id="theme-btn" title="Toggle theme">
+            <svg viewBox="0 0 24 24" class="ico"><path d="M12 2a10 10 0 0 0 0 20 8 8 0 0 1 0-16 10 10 0 0 0 0-4Z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="content">
+        <div class="status-row" id="status-row">
+          <span class="status-chip" data-status="all">All</span>
+        </div>
+
+        <div id="sel-bar" class="sel-bar hidden">
+          <span class="sel-count" id="sel-count">0 selected</span>
+          <span class="sel-spacer"></span>
+          <button class="btn btn-ghost" id="sel-clear">Clear</button>
+          <button class="btn btn-primary" id="sel-report">
+            <svg viewBox="0 0 24 24" class="ico"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm0 2v16h12V8h-4V4H6Z"/></svg>
+            <span class="bx-label">Custom Report</span>
+            <span class="mini-spinner"></span>
+          </button>
+        </div>
+
+        <div class="count-line" id="count-line">0 programs</div>
+
+        <div id="results" class="grid view-cards">
+          <!-- cards injected -->
+        </div>
+
+        <div id="empty" class="empty hidden">
+          <div class="empty-glyph">&#128269;</div>
+          <div class="empty-title">Nothing here yet</div>
+          <p class="empty-sub">Press <b>Scan Now</b> to discover the programs on this device.</p>
+        </div>
+
+        <div id="loading" class="loading hidden">
+          <div class="spinner"></div>
+          <span>Scanning installed programs…</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ── Detail panel ──────────────────────────────────── -->
+  <div id="overlay" class="overlay hidden">
+    <div class="panel" id="panel"></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
