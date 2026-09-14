@@ -148,10 +148,14 @@ fn open_file_location(path: String) -> Result<(), String> {
         return Ok(());
     }
     if p.is_dir() {
-        std::process::Command::new("explorer.exe")
-            .arg(&target)
-            .spawn()
-            .map_err(|e| format!("Cannot open location {target}: {e}"))?;
+        // A trailing backslash in a quoted command line escapes the closing
+        // quote, so explorer.exe would open the wrong folder (e.g. Documents).
+        // Trim it, then open via ShellExecuteW which handles folders reliably.
+        let dir = target.trim_end_matches(['/', '\\']);
+        if dir.is_empty() {
+            return Err(format!("Invalid folder path: \"{target}\""));
+        }
+        shell_open(dir).map_err(|e| format!("Cannot open location {dir}: {e}"))?;
         return Ok(());
     }
 
