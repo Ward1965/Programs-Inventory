@@ -287,8 +287,8 @@ function openPanel(id) {
 }
 
 function pickExe(p) {
-  const icon = p.display_icon || "";
-  const loc = p.install_location || "";
+  const icon = stripQuotes(p.display_icon || "");
+  const loc = stripQuotes(p.install_location || "");
   let base = icon.trim();
   if (base.includes(",")) base = base.split(",")[0];
   if (/\.(ico|dll|png|jpe?g|bmp|gif|txt|chm|url|html?)$/i.test(base)) base = "";
@@ -297,10 +297,17 @@ function pickExe(p) {
   return "";
 }
 
+function stripQuotes(s) {
+  return s.replace(/^\s*"+|"+\s*$/g, "").trim();
+}
+
 function locationTarget(p) {
+  // install_location is the real install folder — the most accurate target.
+  const loc = stripQuotes(p.install_location || "");
+  if (loc) return loc;
   const exe = pickExe(p);
   if (exe) return exe;
-  return (p.install_location || "").trim();
+  return "";
 }
 
 async function openFileLocation(p) {

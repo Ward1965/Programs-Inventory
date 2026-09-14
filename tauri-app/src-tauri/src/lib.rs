@@ -128,12 +128,12 @@ fn launch_program(exe_path: String) -> Result<(), String> {
 /// (cannot be revealed — reports a friendly error).
 #[tauri::command]
 fn open_file_location(path: String) -> Result<(), String> {
-    let trimmed = path.trim().trim_end_matches(|c| c == ',' || c == ' ');
-
-    // Strip DisplayIcon ",index" suffixes (e.g. "C:\App.exe,0").
-    let mut target = trimmed.to_string();
-    if let Some(stripped) = trimmed.split(',').next() {
-        if stripped != trimmed {
+    // Registry DisplayIcon/InstallLocation values are often wrapped in quotes
+    // ("C:\...\App.exe") or carry an icon index suffix (App.exe,0).
+    let mut target = path.trim().trim_matches('"').trim().to_string();
+    if let Some(stripped) = target.split(',').next() {
+        let stripped = stripped.trim().trim_matches('"');
+        if stripped != target {
             target = stripped.to_string();
         }
     }
@@ -156,11 +156,11 @@ fn open_file_location(path: String) -> Result<(), String> {
     }
 
     // Maybe the location itself is a shell: URI (Store apps).
-    if trimmed.starts_with("shell:") {
+    if target.starts_with("shell:") {
         let mut cmd = std::process::Command::new("explorer.exe");
-        cmd.arg(trimmed);
+        cmd.arg(&target);
         cmd.spawn()
-            .map_err(|e| format!("Cannot open location {trimmed}: {e}"))?;
+            .map_err(|e| format!("Cannot open location {target}: {e}"))?;
         return Ok(());
     }
 
