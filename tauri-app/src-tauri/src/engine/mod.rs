@@ -5,6 +5,7 @@ pub mod shortcuts;
 pub mod store;
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -42,6 +43,28 @@ pub(crate) fn is_system_noise(
     let n = name.to_lowercase();
     let p = publisher.to_lowercase();
     let i = display_icon.to_lowercase();
+
+    // ── Windows system host binaries (rundll32, script hosts, …) ───────────
+    // Start-menu "configuration" shortcuts often point at rundll32.exe; their
+    // real subject is the DLL argument, which we do not resolve, so the only
+    // sensible thing is to drop the row entirely instead of listing a system
+    // binary as a program.
+    let bin = Path::new(&i)
+        .file_name()
+        .and_then(OsStr::to_str)
+        .map(|f| f.to_lowercase())
+        .unwrap_or_default();
+    const HOST_BINS: [&str; 6] = [
+        "rundll32.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe",
+        "regsvr32.exe",
+        "svchost.exe",
+    ];
+    if HOST_BINS.contains(&bin.as_str()) {
+        return true;
+    }
 
     // ── Hardware drivers & driver installers ────────────────────────────────
     if n.contains("driver")
@@ -622,6 +645,35 @@ mod tests {
             );
         }
         eprintln!("scan_mix: total={}", list.len());
+    }
+
+    #[test]
+    fn system_host_binaries_are_hidden() {
+        assert!(is_system_noise(
+            "LAV Audio Configuration",
+            "",
+            "",
+            r"C:\Windows\System32\rundll32.exe",
+        ));
+        assert!(is_system_noise(
+            "Properties (ExplorerPatcher)",
+            "",
+            "",
+            r"C:\WINDOWS\system32\RUNDLL32.EXE",
+        ));
+        assert!(!is_system_noise(
+            "LAV Filters",
+            "",
+            "",
+            r"C:\Program Files (x86)\LAV Filters\LAVAudio.ax",
+        ));
+        // A real app must never be blocked by the host-binary rule.
+        assert!(!is_system_noise(
+            "ShareX",
+            "",
+            "",
+            r"C:\Program Files\ShareX\ShareX.exe",
+        ));
     }
 
     #[test]

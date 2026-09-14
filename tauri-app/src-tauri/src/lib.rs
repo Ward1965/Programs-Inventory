@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use tauri::Manager;
 
 #[link(name = "shell32")]
@@ -16,12 +17,90 @@ extern "system" {
     ) -> isize;
 }
 
+#[link(name = "user32")]
+extern "system" {
+    fn EnumWindows(
+        lp_enum_func: Option<unsafe extern "system" fn(*mut core::ffi::c_void, *mut core::ffi::c_void) -> i32>,
+        l_param: *mut core::ffi::c_void,
+    ) -> i32;
+    fn GetClassNameW(h_wnd: *const core::ffi::c_void, lp_class_name: *mut u16, n_max_count: i32) -> i32;
+    fn GetWindowTextW(h_wnd: *const core::ffi::c_void, lp_string: *mut u16, n_max_count: i32) -> i32;
+    fn IsWindowVisible(h_wnd: *const core::ffi::c_void) -> i32;
+    fn SetForegroundWindow(h_wnd: *const core::ffi::c_void) -> i32;
+    fn BringWindowToTop(h_wnd: *const core::ffi::c_void) -> i32;
+}
+
+/// Explorer window handles: `CabinetWClass` is the modern file explorer,
+/// `ExploreWClass` the legacy one.
+struct SearchCtx {
+    needle: String,
+    found: AtomicIsize,
+}
+
+unsafe extern "system" fn enum_explorer_proc(
+    hwnd: *mut core::ffi::c_void,
+    l_param: *mut core::ffi::c_void,
+) -> i32 {
+    if unsafe { IsWindowVisible(hwnd) } == 0 {
+        return 1;
+    }
+    let mut class = [0u16; 64];
+    unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
+    let class_len = class.iter().position(|&c| c == 0).unwrap_or(class.len());
+    let class = String::from_utf16_lossy(&class[..class_len]);
+    if class != "CabinetWClass" && class != "ExploreWClass" {
+        return 1;
+    }
+    let mut title = [0u16; 512];
+    unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) };
+    let title_len = title.iter().position(|&c| c == 0).unwrap_or(title.len());
+    let title = String::from_utf16_lossy(&title[..title_len]);
+
+    let ctx = if l_param.is_null() { return 1 } else { &*(l_param as *mut SearchCtx) };
+    let t = title.to_lowercase();
+    let n = ctx.needle.to_lowercase();
+    if t.contains(&n) || n.contains(&t) {
+        ctx.found.store(hwnd as isize, Ordering::SeqCst);
+        return 0; // stop enumeration
+    }
+    1
+}
+
+/// Bring the file-explorer window showing `folder_name` to the foreground.
+/// Explorer opens asynchronously, so start a short polling loop on a side
+/// thread and focus the matched window whenever it appears.
+fn bring_explorer_front(folder_name: &str) {
+    use std::thread;
+    let needle = folder_name.to_string();
+    thread::spawn(move || {
+        for _ in 0..40 {
+            let mut ctx = SearchCtx { needle: needle.clone(), found: AtomicIsize::new(0) };
+            let ptr: *mut core::ffi::c_void = &mut ctx as *mut SearchCtx as *mut core::ffi::c_void;
+            unsafe {
+                EnumWindows(Some(enum_explorer_proc), ptr);
+                let hwnd = ctx.found.load(Ordering::SeqCst) as *const core::ffi::c_void;
+                if !hwnd.is_null() {
+                    let _ = SetForegroundWindow(hwnd);
+                    let _ = BringWindowToTop(hwnd);
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    });
+}
+
 fn shell_open(path: &str) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     let wide: Vec<u16> = OsStr::new(path).encode_wide().chain(std::iter::once(0)).collect();
     let res = unsafe { ShellExecuteW(std::ptr::null(), std::ptr::null(), wide.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
     if res > 32 {
+        let name = Path::new(path.trim_end_matches(['/', '\\']))
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        bring_explorer_front(&name);
         Ok(())
     } else {
         Err(format!("ShellExecuteW returned {res}" ))
@@ -150,6 +229,10 @@ fn open_file_location(path: String) -> Result<(), String> {
         cmd.raw_arg(&sel);
         cmd.spawn()
             .map_err(|e| format!("Cannot open location for {target}: {e}"))?;
+        let folder = p.parent().and_then(|d| d.file_name()).map(|f| f.to_string_lossy().into_owned());
+        if let Some(folder) = folder {
+            bring_explorer_front(&folder);
+        }
         return Ok(());
     }
     if p.is_dir() {
