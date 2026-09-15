@@ -3,7 +3,7 @@
 use serde::Serialize;
 use std::path::Path;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[link(name = "shell32")]
 extern "system" {
@@ -113,16 +113,26 @@ pub struct ProgramList {
     pub total: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ScanProgress {
+    pct: u8,
+    msg: String,
+}
+
 #[tauri::command]
 async fn scan(app: tauri::AppHandle) -> Result<ProgramList, String> {
     let programs = tauri::async_runtime::spawn_blocking(move || {
-        let mut list = engine::scan_all();
+        let handle = app.clone();
+        let progress = move |pct: u8, msg: &str| {
+            let _ = handle.emit("scan-progress", ScanProgress { pct, msg: msg.to_string() });
+        };
+        let mut list = engine::scan_all_with_progress(&progress);
         let cache = app
             .path()
             .app_data_dir()
             .map_err(|e| e.to_string())?
             .join("icons-v3");
-        let icons = engine::icons::attach_icons(&mut list, &cache);
+        let icons = engine::icons::attach_icons_with_progress(&mut list, &cache, &progress);
         let with_icons = list.iter().filter(|p| p.has_icon).count();
         let c = |s: &str| list.iter().filter(|p| p.status == s).count();
         let line = format!(

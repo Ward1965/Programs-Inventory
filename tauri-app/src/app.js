@@ -659,14 +659,6 @@ const splashStage = $("splash-stage");
 const splashPct = $("splash-pct");
 const splashSub = $("splash-sub");
 const splashSkip = $("splash-skip");
-const SPLASH_STAGES = [
-  [8, "Warming up"],
-  [22, "Reading the installed registry…"],
-  [40, "Collecting uninstall entries…"],
-  [58, "Scanning your Start Menu…"],
-  [76, "Enumerating Store apps…"],
-  [92, "Preparing the inventory…"],
-];
 
 function spawnParticles() {
   const host = $("splash-particles");
@@ -695,32 +687,32 @@ function splashDone() {
   }, 550);
 }
 
-function danceSplash() {
-  let i = 0;
-  const tick = () => {
-    if (splash.classList.contains("gone")) return;
-    if (i < SPLASH_STAGES.length) {
-      const [pct, msg] = SPLASH_STAGES[i];
-      splashBar.style.width = pct + "%";
-      if (splashPct) splashPct.textContent = pct + "%";
-      splashStage.textContent = msg;
-      i++;
-    }
-  };
-  tick();
-  return setInterval(tick, 850);
-}
-
 async function boot() {
   const bootStart = Date.now();
   const MIN_SPLASH_MS = 2400; // keep the welcome visible even if the scan is instant
-  const timer = danceSplash();
   spawnParticles();
   const btn = $("scan-btn");
   btn.classList.add("scanning");
   $("scan-label").textContent = "Scanning…";
   results.classList.add("hidden");
   emptyBox.classList.add("hidden");
+
+  // Progress is pushed from the Rust scan (real phases), not a fake timer.
+  let unlisten = null;
+  try {
+    unlisten = await window.__TAURI__.event.listen("scan-progress", (e) => {
+      if (splash.classList.contains("gone")) return;
+      const { pct, msg } = e.payload || {};
+      if (typeof pct === "number" && pct >= 0 && pct <= 100) {
+        splashBar.style.width = pct + "%";
+        if (splashPct) splashPct.textContent = pct + "%";
+      }
+      if (msg) splashStage.textContent = msg;
+    });
+  } catch (_) {
+    /* events unavailable: splash still completes via splashDone() */
+  }
+
   try {
     const res = await invoke("scan");
     state.programs = res.programs || [];
@@ -738,7 +730,7 @@ async function boot() {
          <p class="empty-sub">${esc(String(e))}</p>`;
     };
   } finally {
-    clearInterval(timer);
+    if (unlisten) { try { unlisten(); } catch (_) {} }
     const elapsed = Date.now() - bootStart;
     if (elapsed < MIN_SPLASH_MS) await new Promise((r) => setTimeout(r, MIN_SPLASH_MS - elapsed));
     btn.classList.remove("scanning");

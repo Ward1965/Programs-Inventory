@@ -557,13 +557,25 @@ fn solidify(p: &mut Program) -> bool {
     false
 }
 
+/// Progress callback: `(percent, phase label)`. Must be safe to call from any
+/// worker thread (icon extraction runs in a thread pool).
+pub type Progress = dyn Fn(u8, &str) + Send + Sync;
+
 /// Collect every installed program from all scan sources and attach icons.
 pub fn scan_all() -> Vec<Program> {
+    scan_all_with_progress(&|_, _| {})
+}
+
+/// `scan_all` with a progress callback that reports each real phase so the
+/// frontend can mirror actual work instead of a cosmetic timer.
+pub fn scan_all_with_progress(progress: &Progress) -> Vec<Program> {
+    progress(5, "Warming up");
     let mut list: Vec<Program> = registry::scan_registry()
         .into_iter()
         .filter_map(|mut p| solidify(&mut p).then_some(p))
         .collect();
 
+    progress(25, "Reading the installed registry…");
     let installed: HashSet<String> = list
         .iter()
         .filter_map(runnable_of)
@@ -572,6 +584,7 @@ pub fn scan_all() -> Vec<Program> {
         .collect();
 
     list.extend(shortcuts::scan_all(&installed));
+    progress(50, "Scanning your Start Menu…");
 
     // Shortcuts landed above with their resolved target in display_icon. Only
     // keep those that point at an executable (or a broken .exe hook); drop
@@ -582,6 +595,7 @@ pub fn scan_all() -> Vec<Program> {
         .collect();
 
     list.extend(store::scan_registry());
+    progress(70, "Enumerating Store apps…");
 
     // Drop any driver/Windows-system rows that slipped in through the other
     // sources (e.g. a copy sitting in the start menu or Store).
@@ -593,6 +607,7 @@ pub fn scan_all() -> Vec<Program> {
             p.display_icon.as_deref().unwrap_or(""),
         )
     });
+    progress(80, "Preparing the inventory…");
 
     // Deterministic order, matching the frontend's name expectations.
     list.sort_by(|a, b| {

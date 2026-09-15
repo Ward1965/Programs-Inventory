@@ -132,19 +132,40 @@ fn get_start_apps() -> Vec<(String, String)> {
 
     let mut bytes: Vec<u8> = Vec::new();
     if let Some(mut out) = child.stdout.take() {
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        let mut buf = [0u8; 8192];
-        loop {
-            if std::time::Instant::now() > deadline {
-                let _ = child.kill();
-                break;
+        // Read the pipe on a background thread fed through a channel. If
+        // PowerShell writes partial output then stalls, the blocking read
+        // would otherwise hold the scan forever — the timeout below is only
+        // reachable while waiting on the channel, never inside a stuck read.
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            loop {
+                match out.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
             }
-            match out.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => bytes.extend_from_slice(&buf[..n]),
-                Err(_) => break,
+        });
+
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match rx.recv_timeout(remaining) {
+                Ok(chunk) => bytes.extend_from_slice(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    break;
+                }
+                Err(_) => break, // pipe closed: the reader thread finished
             }
         }
+        // Killing the child closes its pipe, so a reader stuck in read()
+        // returns promptly and this join never hangs.
+        reader.join().ok();
     }
     let _ = child.wait();
 

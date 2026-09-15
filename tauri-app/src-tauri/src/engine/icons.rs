@@ -787,6 +787,18 @@ fn png_for(p: &Program, appsfolder: &HashMap<String, (u32, u32, Vec<u8>)>) -> Op
 /// application icon as a last resort. Extraction runs on a thread pool so cold
 /// scans finish quickly; a per-icon stamp makes upgrades re-fetch automatically.
 pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
+    attach_icons_with_progress(list, cache, &|_, _| {})
+}
+
+/// `attach_icons` with a progress callback that tracks the icon pass 80→100%.
+///
+/// The callback must be `Fn`, not `FnMut`, because the extraction workers call
+/// it concurrently; the shared done-counter keeps the percent monotonic.
+pub fn attach_icons_with_progress(
+    list: &mut [Program],
+    cache: &Path,
+    progress: &super::Progress,
+) -> usize {
     if list.is_empty() {
         return 0;
     }
@@ -798,7 +810,12 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
     let want_shell = list
         .iter()
         .any(|p| p.display_icon.as_deref().unwrap_or("").starts_with("shell:"));
-    let appsfolder = if want_shell { apps_folder_icons() } else { HashMap::new() };
+    let appsfolder = if want_shell {
+        progress(82, "Reading Store icons…");
+        apps_folder_icons()
+    } else {
+        HashMap::new()
+    };
 
     // Decide which entries need fresh icons (missing or stale stamp).
     let mut todo: Vec<usize> = Vec::new();
@@ -821,6 +838,8 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
     // Clone only the subset that needs work: workers need owned data so they
     // can run concurrently without touching the mutable caller list.
     let jobs: Vec<Program> = todo.iter().map(|&i| list[i].clone()).collect();
+    let total = jobs.len().max(1);
+    let done = std::sync::atomic::AtomicUsize::new(0);
 
     let n_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
     let chunk = jobs.len().div_ceil(n_cpus);
@@ -835,6 +854,8 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
             let slice = &jobs[start..end];
             let worker_dir = cache;
             let af = &appsfolder;
+            let prog = progress;
+            let done = &done;
             s.spawn(move || {
                 for p in slice {
                     let Some(bytes) = png_for(p, af) else {
@@ -847,6 +868,8 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
                             icon_stamp(p),
                         );
                     }
+                    let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    prog(86 + (n * 14 / total) as u8, "Extracting icons…");
                 }
             });
         }
@@ -861,6 +884,7 @@ pub fn attach_icons(list: &mut [Program], cache: &Path) -> usize {
             count += 1;
         }
     }
+    progress(100, "Finalizing icons…");
     count
 }
 
