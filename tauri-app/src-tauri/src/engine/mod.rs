@@ -569,13 +569,24 @@ pub fn scan_all() -> Vec<Program> {
 /// `scan_all` with a progress callback that reports each real phase so the
 /// frontend can mirror actual work instead of a cosmetic timer.
 pub fn scan_all_with_progress(progress: &Progress) -> Vec<Program> {
-    progress(5, "Warming up");
-    let mut list: Vec<Program> = registry::scan_registry()
-        .into_iter()
-        .filter_map(|mut p| solidify(&mut p).then_some(p))
-        .collect();
+    // ── Phase 1: Registry scan + solidify (5% → 25%) ──────────────────
+    progress(5, "Scanning the registry…");
+    let raw = registry::scan_registry();
+    let total_raw = raw.len().max(1);
+    let mut list: Vec<Program> = Vec::with_capacity(total_raw);
+    for (i, mut p) in raw.into_iter().enumerate() {
+        if solidify(&mut p) {
+            list.push(p);
+        }
+        if i % 20 == 0 || i + 1 == total_raw {
+            let pct =
+                5u8.saturating_add(((i as u32 * 20) / total_raw as u32) as u8).min(24);
+            progress(pct, "Analyzing registry entries…");
+        }
+    }
 
-    progress(25, "Reading the installed registry…");
+    // ── Phase 2: Build installed set + scan shortcuts (25% → 50%) ─────
+    progress(25, "Building program index…");
     let installed: HashSet<String> = list
         .iter()
         .filter_map(runnable_of)
@@ -584,21 +595,27 @@ pub fn scan_all_with_progress(progress: &Progress) -> Vec<Program> {
         .collect();
 
     list.extend(shortcuts::scan_all(&installed));
-    progress(50, "Scanning your Start Menu…");
+    progress(50, "Scanning Start Menu…");
 
-    // Shortcuts landed above with their resolved target in display_icon. Only
-    // keep those that point at an executable (or a broken .exe hook); drop
-    // nothing-but-links like .chm/.ico/.url/.lnk-only or plain folders.
-    list = list
-        .into_iter()
-        .filter_map(|mut p| solidify(&mut p).then_some(p))
-        .collect();
+    // ── Phase 3: Solidify combined list + store scan (50% → 70%) ──────
+    let total_all = list.len().max(1);
+    let mut resolved: Vec<Program> = Vec::with_capacity(list.len());
+    for (i, mut p) in list.into_iter().enumerate() {
+        if solidify(&mut p) {
+            resolved.push(p);
+        }
+        if i % 20 == 0 || i + 1 == total_all {
+            let pct =
+                50u8.saturating_add(((i as u32 * 15) / total_all as u32) as u8).min(64);
+            progress(pct, "Resolving executables…");
+        }
+    }
+    list = resolved;
 
     list.extend(store::scan_registry());
     progress(70, "Enumerating Store apps…");
 
-    // Drop any driver/Windows-system rows that slipped in through the other
-    // sources (e.g. a copy sitting in the start menu or Store).
+    // ── Phase 4: Filter system noise (70% → 80%) ──────────────────────
     list.retain(|p| {
         !is_system_noise(
             &p.name,
